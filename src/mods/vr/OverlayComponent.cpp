@@ -6,6 +6,14 @@
 #include "OverlayComponent.hpp"
 
 namespace vrmod {
+namespace {
+// [VR-MENUE-GROESSE 11.09.2026] Breite der VR-Tafel in Metern, live aus REFramework
+// ("RE4VR Menu Editor"). Frueher die Konstante PANEL_WIDTH.
+float panel_width_m() {
+    return g_framework->get_vr_menu_panel_width();
+}
+}
+
 void OverlayComponent::on_reset() {
     m_overlay_data = {};
 }
@@ -23,7 +31,7 @@ std::optional<std::string> OverlayComponent::on_initialize_openvr() {
     // set overlay to visible
     vr::VROverlay()->ShowOverlay(m_overlay_handle);
 
-    overlay_error = vr::VROverlay()->SetOverlayWidthInMeters(m_overlay_handle, 0.25f);
+    overlay_error = vr::VROverlay()->SetOverlayWidthInMeters(m_overlay_handle, panel_width_m());
 
     if (overlay_error != vr::VROverlayError_None) {
         return "VROverlay failed to set overlay width: " + std::string{vr::VROverlay()->GetOverlayErrorNameFromEnum(overlay_error)};
@@ -43,6 +51,9 @@ std::optional<std::string> OverlayComponent::on_initialize_openvr() {
 }
 
 void OverlayComponent::on_pre_imgui_frame() {
+    // Erst die Menueflaeche verankern -- Anzeige und Zeiger lesen sie danach.
+    this->update_panel_anchor();
+
     // OpenXR: Pose und Ausschnitt des Quad-Layers stellen. Die Textur holt sich
     // D3D12Component spaeter im Renderpfad, rechtzeitig vor xrEndFrame.
     this->update_openxr();
@@ -57,6 +68,12 @@ void OverlayComponent::on_pre_imgui_frame() {
 // nicht -- REFramework::draw_ui setzt das Flag jeden Frame neu (REFramework.cpp:1540, aus
 // is_always_show_cursor) und wuerde uns damit ueberschreiben.
 void OverlayComponent::on_frame() {
+    // [VR-MENUE-KONTEXT 11.09.2026] Unter D3D12 zeichnet den Punkt der VR-Menue-
+    // Kontext selbst (REFramework::run_vr_menu_frame), nicht der Desktop.
+    if (g_framework->get_renderer_type() == REFramework::RendererType::D3D12) {
+        return;
+    }
+
     if (!m_pointer_cursor_shown || !g_framework->is_drawing_ui()) {
         return;
     }
@@ -113,24 +130,70 @@ bool OverlayComponent::is_hand_valid(bool right) const {
     return hand_transform_index(right) != vr::k_unTrackedDeviceIndexInvalid;
 }
 
-Matrix4x4f OverlayComponent::compute_panel_transform() const {
+// [MENUE VOR DEM KOPF 11.09.2026] Frueher hing die Flaeche an der linken Hand (samt
+// m_overlay_rotation/m_overlay_position) und nur ohne getrackte Hand 0,5 m vor dem Kopf.
+// Jetzt: beim Oeffnen einmal vor den Kopf gestellt, danach steht sie still im Raum.
+void OverlayComponent::update_panel_anchor() {
     auto& vr = VR::get();
 
-    Matrix4x4f panel{glm::identity<Matrix4x4f>()};
+    // [ACHIEVEMENT 13.09.2026] Die Tafel beim ersten Fledermaus-Choke benutzt
+    // dieselbe Flaeche wie das Menue -- sie muss also genauso verankert werden,
+    // obwohl das Menue zu ist. Sonst faende sie keinen Anker und bliebe unsichtbar.
+    const bool ui_surface = g_framework->is_drawing_ui()
+                            || g_framework->is_achievement_overlay_active();
 
-    if (is_hand_valid(false)) {
-        panel = vr->get_transform(hand_transform_index(false)) * Matrix4x4f{glm::quat{vr->m_overlay_rotation}};
-        panel[3] -= glm::extractMatrixRotation(panel) * vr->m_overlay_position;
-    } else {
-        // Ohne getrackte linke Hand haengt das Menue vor dem Kopf -- sonst waere es beim
-        // Oeffnen per Taste nicht auffindbar.
-        panel = vr->get_transform(0);
-        panel[3] -= glm::extractMatrixRotation(panel) * Vector4f{0.0f, 0.0f, 0.5f, 0.0f};
+    // Menue zu -> beim naechsten Oeffnen neu vor den Kopf stellen.
+    if (!ui_surface) {
+        m_panel_anchored = false;
+        return;
     }
 
-    panel[3].w = 1.0f;
+    const auto distance = g_framework->get_vr_menu_panel_distance();
 
-    return panel;
+    // [VR-MENUE-GROESSE 11.09.2026] Steht schon: nur einem geaenderten Abstand
+    // folgen, entlang der beim Oeffnen gemerkten Richtung und Kopfposition.
+    if (m_panel_anchored) {
+        if (distance != m_panel_distance_used) {
+            m_panel_distance_used = distance;
+            m_panel_anchor[3] = Vector4f{m_panel_head_pos - (m_panel_back * distance), 1.0f};
+        }
+
+        return;
+    }
+
+    // Noch keine gueltige Kopfpose -> im naechsten Frame.
+    if (!vr->is_hmd_active()) {
+        return;
+    }
+
+    const auto hmd = vr->get_transform(0);
+
+    // Nur die Blickrichtung um die Hochachse -- schaut man beim Oeffnen nach unten, soll
+    // die Flaeche trotzdem aufrecht vor einem stehen und nicht auf dem Boden liegen.
+    // Spalte 2 ist die +Z-Achse des Kopfes, also die Richtung NACH HINTEN.
+    auto back = Vector3f{hmd[2]};
+    back.y = 0.0f;
+
+    if (glm::length(back) < 0.001f) {
+        back = Vector3f{0.0f, 0.0f, 1.0f};   // exakt senkrecht geschaut
+    }
+
+    back = glm::normalize(back);
+
+    const auto yaw = std::atan2(back.x, back.z);
+
+    // Die Flaeche schaut nach +Z, also zum Spieler hin; Mitte auf Augenhoehe.
+    m_panel_anchor = Matrix4x4f{glm::angleAxis(yaw, Vector3f{0.0f, 1.0f, 0.0f})};
+    m_panel_head_pos = Vector3f{hmd[3]};
+    m_panel_back = back;
+    m_panel_distance_used = distance;
+    m_panel_anchor[3] = Vector4f{m_panel_head_pos - (back * distance), 1.0f};
+
+    m_panel_anchored = true;
+}
+
+Matrix4x4f OverlayComponent::compute_panel_transform() const {
+    return m_panel_anchor;
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +250,14 @@ PanelHit ray_vs_panel(const Matrix4x4f& panel, float width, float height, const 
 
 void OverlayComponent::update_pointer() {
     auto& vr = VR::get();
+
+    // [MENUE-STEUERUNG 11.09.2026] D3D12 hat den eigenen VR-Menue-Kontext, und der
+    // wird per Controller bedient (REFramework::run_vr_menu_frame) -- KEIN Laser
+    // mehr. Der Rest dieser Funktion ist nur noch der alte D3D11-Weg.
+    if (g_framework->get_renderer_type() == REFramework::RendererType::D3D12) {
+        return;
+    }
+
     auto& io = ImGui::GetIO();
 
     // Cursor wieder ausblenden, sobald der Strahl die Flaeche verlaesst oder das Menue
@@ -227,11 +298,11 @@ void OverlayComponent::update_pointer() {
         return;
     }
 
-    // Dieselben Masse wie die Anzeige: 0.25 m breit, Hoehe aus dem Seitenverhaeltnis des
+    // Dieselben Masse wie die Anzeige: panel_width_m() breit, Hoehe aus dem Seitenverhaeltnis des
     // Menuefensters. Weichen sie ab, zeigt der Strahl neben das, was man sieht -- unter
     // OpenXR deshalb direkt die Werte, mit denen der Quad-Layer gerade angehaengt wird
     // (dort ist der Ausschnitt zusaetzlich auf das Rendertarget begrenzt).
-    auto panel_width = 0.25f;
+    auto panel_width = panel_width_m();
     auto panel_height = panel_width * (window_size.y / window_size.x);
 
     if (vr->get_runtime()->is_openxr()) {
@@ -285,6 +356,7 @@ void OverlayComponent::update_pointer() {
     if (std::abs(stick.y) > 0.2f) {
         io.MouseWheel += stick.y * 0.25f;
     }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +369,17 @@ void OverlayComponent::update_overlay() {
         return;
     }
 
+    // Laeuft nach dem Compositor-Submit, evtl. VOR on_pre_imgui_frame -- ohne das stuende
+    // die Flaeche im Frame des Oeffnens noch einmal an der alten Stelle.
+    update_panel_anchor();
+
+    // [VR-MENUE-GROESSE 11.09.2026] Breite live nachziehen -- SteamVR kennt sie
+    // sonst nur vom Anlegen des Overlays.
+    if (const auto width = panel_width_m(); width != m_overlay_width_set) {
+        vr::VROverlay()->SetOverlayWidthInMeters(m_overlay_handle, width);
+        m_overlay_width_set = width;
+    }
+
     const auto is_d3d11 = g_framework->get_renderer_type() == REFramework::RendererType::D3D11;
 
     const auto last_window_pos = g_framework->get_last_window_pos();
@@ -304,9 +387,24 @@ void OverlayComponent::update_overlay() {
     const auto render_target_width = is_d3d11 ? g_framework->get_rendertarget_width_d3d11() : g_framework->get_rendertarget_width_d3d12();
     const auto render_target_height = is_d3d11 ? g_framework->get_rendertarget_height_d3d11() : g_framework->get_rendertarget_height_d3d12();
 
-    // Sichtbarer Ausschnitt = das Menuefenster im Rendertarget. Nur neu setzen, wenn sich
-    // Fenster oder Rendertarget geaendert haben.
-    if (m_overlay_data.last_x != last_window_pos.x || m_overlay_data.last_y != last_window_pos.y ||
+    // [VR-MENUE-KONTEXT 11.09.2026] D3D12: Die Textur IST das VR-Menue
+    // (REFramework::VR_MENU_WIDTH x VR_MENU_HEIGHT) -- das Overlay zeigt sie
+    // ganz. Einmal setzen; on_reset leert den Merker.
+    if (!is_d3d11) {
+        if (!m_overlay_data.full_bounds_set) {
+            vr::VRTextureBounds_t bounds{};
+            bounds.uMin = 0.0f;
+            bounds.vMin = 0.0f;
+            bounds.uMax = 1.0f;
+            bounds.vMax = 1.0f;
+
+            vr::VROverlay()->SetOverlayTextureBounds(m_overlay_handle, &bounds);
+            m_overlay_data.full_bounds_set = true;
+        }
+    }
+    // D3D11 (alter Weg): Sichtbarer Ausschnitt = das Menuefenster im Rendertarget. Nur
+    // neu setzen, wenn sich Fenster oder Rendertarget geaendert haben.
+    else if (m_overlay_data.last_x != last_window_pos.x || m_overlay_data.last_y != last_window_pos.y ||
         m_overlay_data.last_width != last_window_size.x || m_overlay_data.last_height != last_window_size.y ||
         m_overlay_data.last_render_target_width != render_target_width ||
         m_overlay_data.last_render_target_height != render_target_height)
@@ -336,7 +434,9 @@ void OverlayComponent::update_overlay() {
     // Solange das Menue offen ist, zeigt das Overlay das Rendertarget, sonst eine leere
     // Textur. Nicht HideOverlay: ein verstecktes Overlay muesste beim Oeffnen erst wieder
     // hochkommen, die leere Textur ist der ruhigere Weg.
-    const auto drawing_ui = g_framework->is_drawing_ui();
+    // [ACHIEVEMENT 13.09.2026] Die Tafel zeigt dasselbe Rendertarget.
+    const auto drawing_ui = g_framework->is_drawing_ui()
+                            || g_framework->is_achievement_overlay_active();
 
     if (is_d3d11) {
         auto rt = drawing_ui ? g_framework->get_rendertarget_d3d11() : g_framework->get_blank_rendertarget_d3d11();
@@ -377,29 +477,17 @@ void OverlayComponent::update_openxr() {
 
     auto& xr = vr->m_openxr;
 
-    const auto window_pos = g_framework->get_last_window_pos();
-    const auto window_size = g_framework->get_last_window_size();
-    const auto rt_width = (float)g_framework->get_rendertarget_width_d3d12();
-    const auto rt_height = (float)g_framework->get_rendertarget_height_d3d12();
+    // [VR-MENUE-KONTEXT 11.09.2026] Die Slate-Swapchain hat die feste Groesse des
+    // VR-Menues und wird GANZ gezeigt -- kein Fensterausschnitt mehr.
+    const auto menu_width = REFramework::VR_MENU_WIDTH;
+    const auto menu_height = REFramework::VR_MENU_HEIGHT;
 
-    if (window_size.x < 1.0f || window_size.y < 1.0f || rt_width < 1.0f || rt_height < 1.0f) {
-        xr->ui_layer = false;
-        return;
-    }
+    xr->ui_rect.offset = {0, 0};
+    xr->ui_rect.extent = {(int32_t)menu_width, (int32_t)menu_height};
 
-    // Sichtbarer Ausschnitt der Swapchain = das Menuefenster, das Gegenstueck zu
-    // SetOverlayTextureBounds unter OpenVR.
-    const auto rect_x = std::clamp(window_pos.x, 0.0f, rt_width);
-    const auto rect_y = std::clamp(window_pos.y, 0.0f, rt_height);
-    const auto rect_w = std::clamp(window_size.x, 1.0f, rt_width - rect_x);
-    const auto rect_h = std::clamp(window_size.y, 1.0f, rt_height - rect_y);
-
-    xr->ui_rect.offset = {(int32_t)rect_x, (int32_t)rect_y};
-    xr->ui_rect.extent = {(int32_t)rect_w, (int32_t)rect_h};
-
-    // Breite wie das SteamVR-Overlay (0.25 m), Hoehe aus dem Seitenverhaeltnis.
-    xr->ui_width = 0.25f;
-    xr->ui_height = xr->ui_width * (rect_h / rect_w);
+    // Breite wie das SteamVR-Overlay (panel_width_m()), Hoehe aus dem Seitenverhaeltnis.
+    xr->ui_width = panel_width_m();
+    xr->ui_height = xr->ui_width * (menu_height / menu_width);
 
     const auto panel = compute_panel_transform();
     const auto panel_orientation = glm::normalize(glm::quat{glm::extractMatrixRotation(panel)});
@@ -409,6 +497,8 @@ void OverlayComponent::update_openxr() {
 
     // Der Layer wird nur angehaengt, solange das Menue offen ist -- D3D12Component kopiert
     // dann auch nur dann.
-    xr->ui_layer = g_framework->is_drawing_ui();
+    // [ACHIEVEMENT 13.09.2026] Auch fuer die Tafel anhaengen -- sonst kopiert
+    // D3D12Component das Rendertarget nicht in die Slate-Swapchain.
+    xr->ui_layer = g_framework->is_drawing_ui() || g_framework->is_achievement_overlay_active();
 }
 }

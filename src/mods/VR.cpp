@@ -469,7 +469,8 @@ void VR::inputsystem_update_hook(void* ctx, REManagedObject* input_system) {
 
 bool VR::on_pre_overlay_layer_draw(sdk::renderer::layer::Overlay* layer, void* render_ctx) {
 
-    uiBufferTex = layer->get_ui_buffer_tex_d3d12();
+    auto eye_index = m_frame_count % 2;
+    m_eye_states[eye_index].uiBufferTex = layer->get_ui_buffer_tex_d3d12();
 
     // just don't render anything at all.
     // overlays just seem to break stuff in VR.
@@ -488,6 +489,41 @@ bool VR::on_pre_overlay_layer_draw(sdk::renderer::layer::Overlay* layer, void* r
 #endif
 
     return false;
+}
+
+void VR::on_overlay_layer_draw(sdk::renderer::layer::Overlay* layer, void* render_context) {
+    if (!is_hmd_active() || is_vr_suspended()) {
+        return;
+    }
+
+    auto context = (sdk::renderer::RenderContext*)render_context;
+    auto scene_layer = (sdk::renderer::layer::Scene*)layer->get_parent();
+
+    if (scene_layer == nullptr) {
+        return;
+    }
+
+    auto eye_index = m_frame_count % 2;
+
+    auto& state = m_eye_states[eye_index];
+
+    auto depth = scene_layer->get_depth_stencil();
+
+    if (depth != nullptr && state.depth_copy != nullptr) {
+        context->copy_texture(state.depth_copy, depth);
+    }
+
+    auto motion_vectors_state = scene_layer->get_motion_vectors_state();
+
+    if (motion_vectors_state != nullptr && state.motion_vectors_copy != nullptr) {
+        auto rtv = motion_vectors_state->get_rtv(0);
+
+        if (rtv != nullptr) {
+            if (auto motion_vectors = rtv->get_texture_d3d12(); motion_vectors != nullptr) {
+                context->copy_texture(state.motion_vectors_copy, motion_vectors);
+            }
+        }
+    }
 }
 
 bool VR::on_pre_overlay_layer_update(sdk::renderer::layer::Overlay* layer, void* render_ctx) {
@@ -1179,7 +1215,11 @@ std::optional<std::string> VR::initialize_openvr_input() {
         // shipped OpenVR profiles. A missing handle must never abort VR init here: under OpenVR the
         // boolean Grip already carries the 0.3/0.25 hysteresis from the profile itself.
         const bool optional_action = (it.first == "/actions/default/in/GripValue")
-                                  || (it.first == "/actions/default/in/GripForce");
+                                  || (it.first == "/actions/default/in/GripForce")
+                                  // [TRACKPAD] nur Index/Vive haben eines
+                                  || (it.first == "/actions/default/in/TouchpadClick")
+                                  || (it.first == "/actions/default/in/Touchpad")
+                                  || (it.first == "/actions/default/in/TouchpadForce");
 
         if (error != vr::VRInputError_None) {
             if (optional_action) {
@@ -1990,7 +2030,61 @@ void VR::apply_hmd_transform(glm::quat& rotation, Vector4f& position) {
         new_rotation = glm::normalize(camera_rotation * current_hmd_rotation);
     }
 
-    auto current_relative_pos = rotation_offset * (get_position(0) - m_standing_origin) /*+ current_relative_eye_pos*/;
+    // [ROOMSCALE-KAMERA 16.09.2026] Beim Roomscale-Ducken senkt das Bein-IK Leons
+    // Kopf ab, und die Spielkamera (am Charakter) sinkt mit. Gemessen: Kopf
+    // 0,73 m tiefer bei 0,75 m Headset-Absenkung -- und die Kamera landete knapp
+    // ueber dem Boden, weil der Headset-Versatz hier dieselbe Hoehe noch einmal
+    // abzog. Der Ausgleich nimmt genau den Anteil heraus, den das IK schon
+    // traegt. Ohne Roomscale ist er 0 -- dann rechnet diese Zeile wie immer.
+    auto hmd_rel = get_position(0) - m_standing_origin;
+
+    // [KAMERA-IST-HOEHE 16.09.2026 -- Befund des Users] Mit dem Soll allein kam die
+    // Kamera beim AUFSTEHEN zu spaet hoch: das Bein-IK hebt Leons Mesh sofort,
+    // die Spielkamera folgt ihm aber GEGLAETTET. Beim Ducken fiel das nicht auf
+    // (Kamera kurz ueber dem Kopf), beim Aufstehen steckte man im Mesh.
+    //
+    // Darum wird hier nicht das Soll abgezogen, sondern wie weit die Spielkamera
+    // TATSAECHLICH unter ihrer Stehhoehe ueber Leons Transform liegt. Dann gilt
+    // immer: Kamera = Stehhoehe + echte Kopfhoehe -- egal, wie traege die
+    // Spielkamera folgt. Die Stehhoehe wird gelernt, solange das IK-Soll ~0 ist
+    // (aufrecht). Ist noch keine gelernt, gilt das Soll wie bisher.
+    //
+    // Ohne Roomscale ist m_rs_body_y_valid false: die Zeile rechnet wie immer.
+    if (m_rs_body_y_valid) {
+        const float base_rel = position.y - m_rs_body_y;
+
+        if (std::abs(m_roomscale_camera_y_comp) < 0.015f) {
+            m_rs_base_stand = m_rs_base_stand_valid
+                ? (m_rs_base_stand + (base_rel - m_rs_base_stand) * 0.1f)
+                : base_rel;
+            m_rs_base_stand_valid = true;
+        }
+
+        const float target = m_rs_base_stand_valid
+            ? (std::min)(base_rel - m_rs_base_stand, 0.0f)
+            : m_roomscale_camera_y_comp;
+
+        // [KAMERA-LERP 16.09.2026] Nah an 1:1, aber weich: Zeitkonstante
+        // RS_CAM_TAU_S -- nach ihr sind 63 % des Weges geschafft, nach dem
+        // Dreifachen 95 %. Kleiner = schneller/direkter, groesser = weicher.
+        constexpr float RS_CAM_TAU_S = 0.04f;
+
+        const auto now = std::chrono::steady_clock::now();
+        float dt_s = m_rs_drop_t_valid
+            ? std::chrono::duration<float>(now - m_rs_drop_t).count()
+            : 1.0f;   // erster Aufruf: sofort auf den Zielwert
+        m_rs_drop_t = now;
+        m_rs_drop_t_valid = true;
+
+        dt_s = (std::min)((std::max)(dt_s, 0.0f), 1.0f);
+
+        const float a = 1.0f - std::exp(-dt_s / RS_CAM_TAU_S);
+        m_rs_drop_smooth += (target - m_rs_drop_smooth) * a;
+
+        hmd_rel.y -= m_rs_drop_smooth;
+    }
+
+    auto current_relative_pos = rotation_offset * hmd_rel /*+ current_relative_eye_pos*/;
     current_relative_pos.w = 0.0f;
 
     auto current_head_pos = camera_rotation * current_relative_pos;
@@ -2951,7 +3045,7 @@ void VR::on_present() {
         technique = (technique + 1) % 4;
 
         static const char* const s_technique_names[] = {
-            "Alternating/AFR", "Two Frame Sequential", "Single Frame Multipass", "AFW (experimental)"
+            "Alternating/AFR", "Two Frame Sequential", "Single Frame Multipass", "AFW (beta)"
         };
         spdlog::info("[VR] Rendering technique -> {} ({})", technique, s_technique_names[technique]);
     }
@@ -3027,6 +3121,25 @@ void VR::on_post_present() {
     
     if (is_using_multipass() || is_using_afw() || (m_render_frame_count + 1) % 2 == m_left_eye_interval) {
         runtime->consume_events(nullptr);
+    }
+
+    const auto is_left_eye_frame = (is_using_multipass() || is_using_afw()) ? true : ((m_render_frame_count) % 2 == m_left_eye_interval);
+
+    if ((is_left_eye_frame)) {
+        if (runtime->get_synchronize_stage() == VRRuntime::SynchronizeStage::VERY_LATE || !runtime->got_first_sync) {
+            const auto had_sync = runtime->got_first_sync;
+            runtime->synchronize_frame();
+
+            if (!runtime->got_first_poses || !had_sync) {
+                update_hmd_state();
+            }
+        }
+
+        if (runtime->is_openxr() && runtime->ready() && runtime->get_synchronize_stage() == VRRuntime::SynchronizeStage::VERY_LATE) {
+            if (!m_openxr->frame_began) {
+                m_openxr->begin_frame();
+            }
+        }
     }
 
     if (!inside_on_end && runtime->wants_reinitialize) {
@@ -3899,17 +4012,58 @@ void VR::on_pre_end_rendering(void* entry) {
         }
     }
 
+    const auto is_vr_multipass = is_hmd_active() && is_using_multipass();
     auto root_layer = sdk::renderer::get_root_layer();
-    if (root_layer != nullptr && m_frame_count > 600) {
+
+    auto eye_index = m_frame_count % 2;
+    auto& state = m_eye_states[eye_index];
+    if (root_layer != nullptr && !is_vr_multipass && m_is_d3d12) {
         auto [output_parent, output_layer] = root_layer->find_layer_recursive("via.render.layer.Output");
         auto valid_scene_layers = (*output_layer)->find_fully_rendered_scene_layers();
         if (valid_scene_layers.empty()) {
+            state.depth.Reset();
+            state.motion_vectors.Reset();
+            state.uiBufferTex.Reset();
             return;
         }
-        if (valid_scene_layers.size() > 0) {
-            depthTex = valid_scene_layers[0]->get_depth_stencil_d3d12();
-            motionVectorsTex = valid_scene_layers[0]->get_motion_vectors_d3d12();
-        } 
+
+        auto new_depth = valid_scene_layers[0]->get_depth_stencil_d3d12();
+        auto new_motion_vectors = valid_scene_layers[0]->get_motion_vectors_d3d12();
+
+        if (new_depth != nullptr && (state.depth_copy == nullptr || new_depth != state.depth.Get())) {
+            if(state.depth_copy != nullptr)
+                state.depth_copy.reset();
+            state.depth_copy = valid_scene_layers[0]->get_depth_stencil()->clone();
+            state.depth = new_depth;
+
+            spdlog::info("[VR] Made clone of depth stencil @ {:x}", (uintptr_t)state.depth_copy.get());
+        }
+
+        if (new_motion_vectors != nullptr && (state.motion_vectors_copy == nullptr || new_motion_vectors != state.motion_vectors.Get())) {
+            const auto motion_vectors_state = valid_scene_layers[0]->get_motion_vectors_state();
+
+            if (motion_vectors_state != nullptr) {
+                const auto rtv = motion_vectors_state->get_rtv(0);
+
+                if (rtv != nullptr) {
+                    auto tex = rtv->get_texture_d3d12();
+
+                    if (tex != nullptr) {
+                        if (state.motion_vectors_copy != nullptr)
+                            state.motion_vectors_copy.reset();
+                        state.motion_vectors_copy = tex->clone();
+                        state.motion_vectors = new_motion_vectors;
+
+                        spdlog::info("[VR] Made clone of motion vectors @ {:x}", (uintptr_t)state.motion_vectors_copy.get());
+                    }
+                }
+            }
+        }
+    }
+    else {
+        state.depth.Reset();
+        state.motion_vectors.Reset();
+        state.uiBufferTex.Reset();
     }
 }
 
@@ -4654,7 +4808,97 @@ void VR::openvr_input_to_re_engine() {
 // The framewarp options live here too: the VR tree itself is hidden by the mod filter in Mods.cpp,
 // so this is the only place they can still be reached.
 void VR::draw_rendering_technique_ui() {
-    m_rendering_technique->draw("Rendering Technique");
+    // [LISTE GEKUERZT 10.09.2026] "Alternating/AFR" (0) und "Two Frame
+    // Sequential" (1) machen in RE4 nur Aerger und sind deshalb nicht mehr
+    // waehlbar. Bewusst NUR die Liste gekuerzt, nicht die Werte: 0..3 stehen
+    // weiter fuer dieselben Techniken (enum RenderingTechnique, VR.hpp:51).
+    // Wuerde man die Eintraege aus dem ModCombo loeschen, verschoeben sich alle
+    // Indizes -- gespeicherte Configs (VR_RenderingTechnique_V2), die Vergleiche
+    // im Code und die Numpad-Umschalter (VR.cpp:2931/2950) zeigten dann auf die
+    // falsche Technik.
+    //
+    // [PUNKTE STATT DROPDOWN 11.09.2026] Jede Technik ist ein eigener
+    // Auswahlpunkt, in fester Reihenfolge. AFR und Two Frame Sequential stehen
+    // wieder in der Liste, aber AUSGEGRAUT (BeginDisabled) -- sichtbar, nicht
+    // anklickbar. Die Werte bleiben die des enums, die Reihenfolge hier ist
+    // reine Anzeige.
+    {
+        struct Entry {
+            const char* name;
+            int32_t value;
+            bool selectable;
+        };
+
+        static const Entry entries[] = {
+            {"Single Frame Multipass", RenderingTechnique::MULTIPASS, true},
+            {"AFW (beta)", RenderingTechnique::ALTERNATE_FRAME_WARPING, true},
+            {"Alternating/AFR", RenderingTechnique::ALTERNATING, false},
+            {"Two Frame Sequential", RenderingTechnique::SEQUENTIAL_FRAME, false},
+        };
+
+        int32_t& value = m_rendering_technique->value();
+
+        // [UEBERSCHRIFT 11.09.2026] Mittig, knallrot, etwas groesser, Absatz
+        // darunter -- gemeinsam mit "Upscaling" (REFramework::draw_menu_heading).
+        g_framework->draw_menu_heading("Rendering Technique", true);
+
+        // Mehr Luft zwischen den Punkten (Theme: 4 px).
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, g_framework->menu_px(10.0f)));
+
+        // [MENUE-AUSWAHL 11.09.2026] Aussehen wie ein Toggle mit weissem Rahmen --
+        // steckt in REFramework::draw_menu_radio (gilt fuer alle Auswahlen).
+        for (const auto& entry : entries) {
+            if (!entry.selectable) {
+                ImGui::BeginDisabled();
+            }
+
+            if (g_framework->draw_menu_radio(entry.name, value == entry.value) && entry.selectable) {
+                value = entry.value;
+
+                // [PUREDARK dcdbd4fe 23.08.2026] AFW laeuft mit Sync Mode Very Late (sonst weniger FPS).
+                if (is_using_afw()) {
+                    get_runtime()->custom_stage = VRRuntime::SynchronizeStage::VERY_LATE;
+                }
+                g_framework->request_save_config();
+            }
+
+            if (!entry.selectable) {
+                ImGui::EndDisabled();
+            }
+
+            // [UI RENDER FIX 16.09.2026 -- Ansage des Users] Rechts neben
+            // "AFW (beta)", nur solange AFW gewaehlt ist. Schaltet PureDarks
+            // UI-Fix (UI nach dem Upscaler scharf aufkleben), der ohnehin nur
+            // in AFW wirkt. Default aus.
+            if (entry.value == RenderingTechnique::ALTERNATE_FRAME_WARPING && is_using_afw()) {
+                if (const auto& upscaler = TemporalUpscaler::get(); upscaler != nullptr) {
+                    bool ui_fix = upscaler->is_enabled_ui_fix();
+
+                    ImGui::SameLine();
+
+                    if (g_framework->draw_menu_checkbox("UI Render Fix", &ui_fix)) {
+                        upscaler->set_enabled_ui_fix(ui_fix);
+                        g_framework->request_save_config();
+                    }
+                }
+            }
+        }
+
+        ImGui::PopStyleVar();
+
+        // Steht der Wert trotzdem auf einer der beiden ausgebauten Techniken
+        // (aus der Config oder ueber Numpad 8), dann ehrlich anzeigen statt
+        // still etwas anderes zu behaupten -- und NICHT heimlich umstellen,
+        // sonst zoege das Menue den Numpad-Umschalter sofort wieder zurueck.
+        if (value == RenderingTechnique::ALTERNATING
+            || value == RenderingTechnique::SEQUENTIAL_FRAME) {
+            ImGui::TextColored(ImVec4{1.0f, 0.27f, 0.0f, 1.0f},
+                               "Aktiv: %s (nicht mehr im Menue waehlbar)",
+                               value == RenderingTechnique::ALTERNATING
+                                   ? "Alternating/AFR"
+                                   : "Two Frame Sequential");
+        }
+    }
 
     if (m_rendering_technique->value() == ALTERNATE_FRAME_WARPING) {
         // [UI_AUSBLENDEN 2026-08-18] Unter "Alternate Frame Warping" wird gar nichts
@@ -4671,14 +4915,20 @@ void VR::draw_rendering_technique_ui() {
 // REFramework window. The VR tree it used to live in (on_draw_ui below) never gets drawn
 // because Mods.cpp only lets ScriptRunner and TemporalUpscaler through the filter.
 // The hotkey path (m_recenter_view_key, VR.cpp on_config_load/on_frame) is untouched.
-void VR::draw_recenter_button() {
+// [RUECKGABE 10.09.2026] Meldet, ob der Knopf ueberhaupt gezeichnet wurde --
+// ohne geladene Runtime zeichnet er nichts. Der Aufrufer haengt die Font-Size
+// per SameLine daneben und darf das nur tun, wenn wirklich etwas in der Zeile
+// steht, sonst rutscht sie ins Leere.
+bool VR::draw_recenter_button() {
     if (get_runtime() == nullptr || !get_runtime()->loaded) {
-        return;
+        return false;
     }
 
     if (ImGui::Button("Recenter View")) {
         recenter_view();
     }
+
+    return true;
 }
 
 // [RESOLUTION_TOP 2026-08-20] Same reason as draw_recenter_button: the "Resolution Scale" slider
@@ -4692,14 +4942,20 @@ bool VR::draw_resolution_scale_slider() {
         return false;
     }
 
-    const auto changed = m_resolution_scale->draw("Resolution Scale");
+    const auto changed = m_resolution_scale->draw("OpenXR Resolution Scale");
 
     ImGui::Text("Render Resolution: %d x %d", get_runtime()->get_width(), get_runtime()->get_height());
     ImGui::SameLine();
 
     const auto pending = m_resolution_scale->value() != m_openxr->resolution_scale;
 
-    if (ImGui::SmallButton(pending ? "Set##resscale" : "Set (no change)##resscale") && pending) {
+    // [SET-KNOPF 12.09.2026] Weisser eckiger Rahmen wie die Toggles im Menue, und
+    // immer nur "Set" -- der Zusatz "(no change)" ist raus.
+    g_framework->push_menu_toggle_style();
+    const bool set_clicked = ImGui::SmallButton("Set##resscale");
+    g_framework->pop_menu_toggle_style();
+
+    if (set_clicked && pending) {
         m_openxr->resolution_scale = m_resolution_scale->value();
         initialize_openxr_swapchains();
         return true;
@@ -5003,6 +5259,10 @@ void VR::on_config_load(const utility::Config& cfg) {
         initialize_openxr_swapchains();
     }
 
+    if (is_using_afw()) {
+        get_runtime()->custom_stage = VRRuntime::SynchronizeStage::VERY_LATE;
+    }
+
     if (m_motion_controls_inactivity_timer->value() <= 10.0f) {
         m_motion_controls_inactivity_timer->value() = 30.0f;
     }
@@ -5292,7 +5552,21 @@ vr::HmdMatrix34_t VR::get_raw_transform(uint32_t index) const {
     }
 }
 
+// [MENUE-STEUERUNG 11.09.2026] Die Sperre: Menue offen ODER Loslass-Waechter nach
+// dem Schliessen (REFramework::run_vr_menu_frame setzt/loest ihn).
+bool VR::is_menu_input_blocked() const {
+    return m_menu_release_guard || (g_framework != nullptr && g_framework->is_drawing_ui());
+}
+
 bool VR::is_action_active(vr::VRActionHandle_t action, vr::VRInputValueHandle_t source) const {
+    if (is_menu_input_blocked()) {
+        return false;
+    }
+
+    return is_action_active_raw(action, source);
+}
+
+bool VR::is_action_active_raw(vr::VRActionHandle_t action, vr::VRInputValueHandle_t source) const {
     if (!get_runtime()->loaded) {
         return false;
     }
@@ -5313,7 +5587,11 @@ bool VR::is_action_active(vr::VRActionHandle_t action, vr::VRInputValueHandle_t 
         // force sensor where it exists, otherwise from squeeze/value. Controllers with neither
         // (Vive wands, WMR) bind no float action at all, get_action_float returns false, and the
         // boolean path below runs exactly as before.
-        if (action == m_action_grip && m_grip_use_analog->value()) {
+        // [GRIP NUR KNUCKLES 16.09.2026] Die eigene Schwelle war fuer die Valve-Index-Controller
+        // gebaut. Andere Controller (Pimax SLAM: Menue/Laufen gingen, Greifen nie) bekommen wieder
+        // die Entscheidung der Runtime wie vor dem 20.08. -- der Bool-Weg unten.
+        if (action == m_action_grip && m_grip_use_analog->value()
+            && m_openxr->get_current_interaction_profile() == "/interaction_profiles/valve/index_controller") {
             const auto hand = (VRRuntime::Hand)source;
 
             if (hand <= VRRuntime::Hand::RIGHT) {
@@ -5363,13 +5641,22 @@ bool VR::is_action_active(vr::VRActionHandle_t action, vr::VRInputValueHandle_t 
     }
 
     if (!active && action == m_action_minimap) {
-        active = is_action_active(m_action_b_button, m_left_joystick) && is_hand_behind_head(VRRuntime::Hand::LEFT);
+        active = is_action_active_raw(m_action_b_button, m_left_joystick) && is_hand_behind_head(VRRuntime::Hand::LEFT);
     }
 
     return active;
 }
 
 Vector2f VR::get_joystick_axis(vr::VRInputValueHandle_t handle) const {
+    // [MENUE-STEUERUNG 11.09.2026] Bei offenem Menue stehen die Sticks fuers Spiel still.
+    if (is_menu_input_blocked()) {
+        return Vector2f{};
+    }
+
+    return get_joystick_axis_raw(handle);
+}
+
+Vector2f VR::get_joystick_axis_raw(vr::VRInputValueHandle_t handle) const {
     if (!get_runtime()->loaded) {
         return Vector2f{};
     }
@@ -5395,12 +5682,105 @@ Vector2f VR::get_joystick_axis(vr::VRInputValueHandle_t handle) const {
     return Vector2f{};
 }
 
+// [TRACKPAD 15.09.2026] Nur fuer das eigene Menue gedacht: die Achse des
+// rechten Trackpads. Bewusst OHNE die Menue-Sperre aus get_joystick_axis --
+// sie soll ja genau dann arbeiten, wenn das Menue offen ist.
+Vector2f VR::get_right_touchpad_axis() const {
+    if (!get_runtime()->loaded) {
+        return Vector2f{};
+    }
+
+    if (get_runtime()->is_openvr()) {
+        if (m_action_touchpad == vr::k_ulInvalidActionHandle) {
+            return Vector2f{};
+        }
+
+        vr::InputAnalogActionData_t data{};
+        vr::VRInput()->GetAnalogActionData(m_action_touchpad, &data, sizeof(data), m_right_joystick);
+
+        return Vector2f{ data.x, data.y };
+    }
+
+    if (get_runtime()->is_openxr()) {
+        return m_openxr->get_touchpad_axis(VRRuntime::Hand::RIGHT);
+    }
+
+    return Vector2f{};
+}
+
+// [TRACKPAD-PRESS 15.09.2026] Unter OpenVR bildet SteamVR den Klick selbst aus
+// der Kraft -- dort reicht die boolesche Aktion. Unter OpenXR gibt es beim
+// Index keinen trackpad/click, sondern nur die KRAFT: deshalb dort zusaetzlich
+// die Kraft lesen und mit einer Schwelle vergleichen.
+bool VR::is_touchpad_pressed(VRRuntime::Hand hand) const {
+    if (!get_runtime()->loaded) {
+        return false;
+    }
+
+    const auto handle = (hand == VRRuntime::Hand::LEFT) ? m_left_joystick : m_right_joystick;
+
+    if (m_action_touchpad_click != vr::k_ulInvalidActionHandle
+        && is_action_active(m_action_touchpad_click, handle)) {
+        return true;
+    }
+
+    if (!get_runtime()->is_openxr()) {
+        return false;
+    }
+
+    if (m_action_touchpad_force == vr::k_ulInvalidActionHandle) {
+        return false;
+    }
+
+    // Schwelle wie im OpenVR-Knuckles-Profil (0.3 an/0.25 aus) -- hier nur die
+    // obere, ein Klick ist kurz und braucht keine Hysterese.
+    //
+    // [KORREKTUR 15.09.2026] Erst stand hier get_action_axis -- das fragt
+    // xrGetActionStateVector2f ab. TouchpadForce ist aber ein FLOAT
+    // (vector1), deshalb kamen konstant 0.00 an, obwohl das Handle gueltig
+    // war ("ForceHandle=ok, alle Werte 0"). Float-Aktionen gehen ueber
+    // get_action_float -- denselben Weg nimmt auch GripForce.
+    float force = 0.0f;
+
+    if (!m_openxr->get_action_float((XrAction)m_action_touchpad_force, hand, force)) {
+        return false;
+    }
+
+    return force > 0.3f;
+}
+
+float VR::get_touchpad_force(VRRuntime::Hand hand) const {
+    if (!get_runtime()->loaded || !get_runtime()->is_openxr()) {
+        return -1.0f;
+    }
+
+    if (m_action_touchpad_force == vr::k_ulInvalidActionHandle) {
+        return -2.0f;   // Aktion gar nicht gebunden
+    }
+
+    float force = 0.0f;
+
+    if (!m_openxr->get_action_float((XrAction)m_action_touchpad_force, hand, force)) {
+        return -3.0f;   // Abfrage schlug fehl
+    }
+
+    return force;
+}
+
 Vector2f VR::get_left_stick_axis() const {
     return get_joystick_axis(m_left_joystick);
 }
 
 Vector2f VR::get_right_stick_axis() const {
     return get_joystick_axis(m_right_joystick);
+}
+
+Vector2f VR::get_left_stick_axis_raw() const {
+    return get_joystick_axis_raw(m_left_joystick);
+}
+
+Vector2f VR::get_right_stick_axis_raw() const {
+    return get_joystick_axis_raw(m_right_joystick);
 }
 
 void VR::trigger_haptic_vibration(float seconds_from_now, float duration, float frequency, float amplitude, vr::VRInputValueHandle_t source) {

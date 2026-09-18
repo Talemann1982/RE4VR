@@ -17,6 +17,34 @@
 
 #include "REFramework.hpp"
 
+// ============================================================================
+// [PERSISTENZ 2026-09-09] Menue-Einstellungen ueberlebten das Spiel nicht.
+// ============================================================================
+// Gemessen: in einer ganzen Sitzung lief `save_config()` GENAU EINMAL -- der
+// automatische Speicher direkt nach der Initialisierung. Danach nie wieder.
+// Geschrieben wurde bis dahin nur noch beim WECHSEL des Menue-Zustands
+// (`set_draw_ui`), eine Wertaenderung fuer sich loeste gar nichts aus. Wer das
+// Spiel beendete, ohne das Menue vorher zuzuklappen, verlor jede Aenderung --
+// deshalb stand z.B. der Upscaler nach dem Neustart wieder auf dem alten Wert.
+//
+// Jetzt meldet JEDE echte Wertaenderung einen Speicherwunsch an.
+// `request_save_config()` setzt nur ein Flag; geschrieben wird einmal am Ende
+// desselben Frames (REFramework::run_imgui_frame). Es speichert also nicht
+// dauernd im Hintergrund, sondern genau einmal pro Aenderung.
+//
+// Schieberegler sind der Sonderfall: `SliderFloat` meldet WAEHREND des Ziehens
+// in jedem Frame eine Aenderung. Dort wird deshalb erst beim LOSLASSEN
+// gespeichert (`IsItemDeactivatedAfterEdit`), sonst gaebe es 60 Schreibvorgaenge
+// pro Sekunde.
+//
+// Die Rueckgabewerte von draw() bleiben unangetastet -- Aufrufer, die daran
+// ihr eigenes Verhalten haengen, merken von alledem nichts.
+inline void modvalue_request_save() {
+    if (g_framework != nullptr) {
+        g_framework->request_save_config();
+    }
+}
+
 class IModValue {
 public:
     using Ptr = std::unique_ptr<IModValue>;
@@ -97,6 +125,11 @@ public:
     bool draw(std::string_view name) override {
         ImGui::PushID(this);
         auto ret = ImGui::Checkbox(name.data(), &m_value);
+
+        if (ret) {
+            modvalue_request_save();
+        }
+
         ImGui::PopID();
 
         return ret;
@@ -125,6 +158,11 @@ public:
     bool draw(std::string_view name) override {
         ImGui::PushID(this);
         auto ret = ImGui::InputFloat(name.data(), &m_value);
+
+        if (ret) {
+            modvalue_request_save();
+        }
+
         ImGui::PopID();
 
         return ret;
@@ -152,6 +190,13 @@ public:
     bool draw(std::string_view name) override {
         ImGui::PushID(this);
         auto ret = ImGui::SliderFloat(name.data(), &m_value, m_range.x, m_range.y);
+
+        // Waehrend des Ziehens meldet SliderFloat JEDEN Frame eine Aenderung --
+        // hier zaehlt deshalb nur das Loslassen.
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            modvalue_request_save();
+        }
+
         ImGui::PopID();
 
         return ret;
@@ -185,6 +230,11 @@ public:
     bool draw(std::string_view name) override {
         ImGui::PushID(this);
         auto ret = ImGui::InputInt(name.data(), &m_value);
+
+        if (ret) {
+            modvalue_request_save();
+        }
+
         ImGui::PopID();
 
         return ret;
@@ -218,6 +268,11 @@ public:
 
         ImGui::PushID(this);
         auto ret = ImGui::Combo(name.data(), &m_value, m_options.data(), static_cast<int32_t>(m_options.size()));
+
+        if (ret) {
+            modvalue_request_save();
+        }
+
         ImGui::PopID();
 
         return ret;
@@ -298,6 +353,9 @@ public:
                 if (keys[k]) {
                     m_value = is_erase_key(k) ? UNBOUND_KEY : k;
                     m_waiting_for_new_key = false;
+                    // draw() liefert hier IMMER true -- der Rueckgabewert taugt
+                    // also nicht als Ausloeser. Die echte Zuweisung schon.
+                    modvalue_request_save();
                     break;
                 }
             }

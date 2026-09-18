@@ -36,6 +36,8 @@
 #endif
 #endif
 
+
+
 #include "TemporalUpscaler.hpp"
 
 #include "VR.hpp"
@@ -189,6 +191,17 @@ void TemporalUpscaler::on_draw_ui() {
         return;
     }
 
+    draw_settings();
+}
+
+// [MENUE-KATEGORIEN 11.09.2026] Der Inhalt ohne den Header -- das Hauptfenster
+// zeichnet ihn in der Kategorie "Upscaler", dort ist die Kategorie selbst
+// schon die Ueberschrift.
+void TemporalUpscaler::draw_settings() {
+    // [UEBERSCHRIFT 11.09.2026] Steht immer, auch wenn das Backend fehlt -- die
+    // Hinweise darunter gehoeren ebenfalls zum Upscaling.
+    g_framework->draw_menu_heading("Upscaling");
+
 #if TDB_VER < 67
     ImGui::TextWrapped("TemporalUpscaler is not yet supported on this version of the engine.");
     ImGui::TextWrapped("Supported: RE2/RE3/RE7 (RT latest, not beta builds), RE4, RE8, SF6, DMC5 (partial)");
@@ -199,17 +212,35 @@ void TemporalUpscaler::on_draw_ui() {
         ImGui::TextWrapped("And the corresponding DLLs for your preferred upscaler(s) (DLSS/FSR2/XeSS)");
     } else {
         //ImGui::Checkbox("Enabled", &m_enabled);
-        m_enabled->draw("Enabled");
+        // [UMBENANNT 11.09.2026] War "Enabled". Nur die Beschriftung -- der
+        // Config-Schluessel haengt am ModToggle, nicht am Anzeigetext.
+        // [MENUE-TOGGLE 11.09.2026] Toggles im Menue-Look (weisser eckiger Rahmen,
+        // knallroter Haken), wie REFramework::draw_menu_checkbox -- ModToggle
+        // zeichnet selbst, deshalb der Stil hier drumherum.
+        g_framework->push_menu_toggle_style();
+        m_enabled->draw("Enable Upscaling");
+        g_framework->pop_menu_toggle_style();
 
         if (ready()) {
             //if (ImGui::Checkbox("Sharpness", &m_sharpness)) {
-            if (m_sharpness->draw("Sharpness")) {
+            g_framework->push_menu_toggle_style();
+            const bool sharpness_changed = m_sharpness->draw("Sharpness");
+            g_framework->pop_menu_toggle_style();
+
+            if (sharpness_changed) {
                 release_upscale_features();
                 init_upscale_features();
             }
 
             //ImGui::DragFloat("Sharpness Amount", &m_sharpness_amount, 0.01f, 0.0f, 5.0f);
-            m_sharpness_amount->draw("Sharpness Amount");
+            // Ganze Schritte 0..10 -- kein Nachkomma, wie angesagt.
+            {
+                int amount = m_sharpness_amount->value();
+
+                if (ImGui::SliderInt("Sharpness Amount", &amount, 0, 10)) {
+                    m_sharpness_amount->value() = std::clamp(amount, 0, 10);
+                }
+            }
 
             std::vector<const char*> imgui_combo_names{};
 
@@ -261,7 +292,9 @@ void TemporalUpscaler::on_draw_ui() {
 #endif
 
     // Moved here from the VR tree, drawn unconditionally so it stays reachable with the upscaler off
-    ImGui::Separator();
+    // [TRENNSTRICH 11.09.2026] Absatz + roter Trennstrich + Absatz zeichnet
+    // jetzt die Ueberschrift "Rendering Technique" selbst
+    // (REFramework::draw_menu_heading mit gap_before) -- wie alle Ueberschriften.
     VR::get()->draw_rendering_technique_ui();
 }
 
@@ -293,6 +326,8 @@ void TemporalUpscaler::on_early_present() {
     if (m_eye_states[0].scene_layer == nullptr) {
         return;
     }
+
+    auto eye_index = VR::get()->get_render_frame_count() % 2;
 
     if (m_is_d3d12) {
         auto& hook = g_framework->get_d3d12_hook();
@@ -348,11 +383,12 @@ void TemporalUpscaler::on_early_present() {
                 }
 
                 auto desc = finalColorDesc.pTexture->GetDesc();
-                if (extractedUIBufferDesc.pTexture == NULL || extractedUIBufferDesc.pTexture->GetDesc().Width != desc.Width ||
-                    extractedUIBufferDesc.pTexture->GetDesc().Height != desc.Height) {
-                    d3d12Renderer->CreateTexture(desc.Width, desc.Height, DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, extractedUIBufferDesc, true);
+                if (extractedUIBufferDesc[eye_index].pTexture == NULL ||
+                    extractedUIBufferDesc[eye_index].pTexture->GetDesc().Width != desc.Width ||
+                    extractedUIBufferDesc[eye_index].pTexture->GetDesc().Height != desc.Height) {
+                    d3d12Renderer->CreateTexture(desc.Width, desc.Height, DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, extractedUIBufferDesc[eye_index], true);
                 }
-                d3d12Renderer->ExtractUI(cmdList, extractedUIBufferDesc, hudlessDesc, finalColorDesc);
+                d3d12Renderer->ExtractUI(cmdList, extractedUIBufferDesc[eye_index], hudlessDesc, finalColorDesc);
                 // TonemapParams params;
                 // params.fGamma = 1.10f;
                 // params.fLowerLimit = 0.024f;
@@ -461,7 +497,11 @@ void TemporalUpscaler::on_early_present() {
                 params.renderSizeY = get_render_height();
                 params.jitterOffsetX = m_jitter_offsets[evaluate_index][0];
                 params.jitterOffsetY = m_jitter_offsets[evaluate_index][1];
-                params.sharpness = m_sharpness_amount->value();
+                // [ZURUECK AUF DEN ALTEN WEG 15.09.2026] Das Sharpening des
+                // Plugins WIRKT -- es war vor dem Umbau in Ordnung. Der eigene
+                // CAS-Pass dahinter kam im Bild nicht an und hat den Regler
+                // komplett totgelegt; er ist wieder raus.
+                params.sharpness = sharpness_value();   // Menue 0..10 -> 0.0..1.0
                 params.nearPlane = m_nearz;
                 params.farPlane = m_farz;
                 params.verticalFOV = m_fov;
@@ -471,6 +511,17 @@ void TemporalUpscaler::on_early_present() {
                 if (i == 0) {
                     copier.copy((ID3D12Resource*)m_upscaled_textures[evaluate_index], backbuffer.Get(),
                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PRESENT);
+                } else {
+                    // [CAS 15.09.2026] Erst hier ist der Upscaler gelaufen
+                    // (params.execute = i == 1). Geschaerft werden BEIDE Augen,
+                    // und zwar IN die upscaled Textur hinein -- aus der holt die
+                    // VR-Schicht ihr Bild (VR.cpp:3975).
+                    const float cas = m_sharpness->value() ? sharpness_value() : 0.0f;
+
+                    for (auto idx = 0; idx < 2; ++idx) {
+                        m_sharpen.dispatch_inplace(device, copier.cmd_list.Get(),
+                            (ID3D12Resource*)m_upscaled_textures[idx], cas);
+                    }
                 }
             }
         } else {
@@ -529,7 +580,9 @@ void TemporalUpscaler::on_early_present() {
                 params.renderSizeY = get_render_height();
                 params.jitterOffsetX = m_jitter_offsets[evaluate_index][0];
                 params.jitterOffsetY = m_jitter_offsets[evaluate_index][1];
-                params.sharpness = m_sharpness_amount->value();
+                // [ZURUECK AUF DEN ALTEN WEG 15.09.2026] s. oben: der Regler
+                // geht wieder direkt an den Upscaler.
+                params.sharpness = sharpness_value();   // Menue 0..10 -> 0.0..1.0
                 params.nearPlane = m_nearz;
                 params.farPlane = m_farz;
                 params.verticalFOV = m_fov;
@@ -540,7 +593,15 @@ void TemporalUpscaler::on_early_present() {
                     //params.renderSizeX, params.renderSizeY, params.sharpness, params.jitterOffsetX, params.jitterOffsetY, params.motionScaleX, params.motionScaleY, params.reset, params.nearPlane, params.farPlane, params.verticalFOV, params.execute);
 
                 if (i == 0) {
-                    copier.copy((ID3D12Resource*)m_upscaled_textures[evaluate_index], backbuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PRESENT);
+                    // [CAS 15.09.2026] Hier laeuft der Upscaler in JEDEM
+                    // Durchgang (params.execute = true), also direkt danach
+                    // schaerfen -- in die upscaled Textur selbst.
+                    auto* upscaled = (ID3D12Resource*)m_upscaled_textures[evaluate_index];
+                    const float cas = m_sharpness->value() ? sharpness_value() : 0.0f;
+
+                    m_sharpen.dispatch_inplace(device, copier.cmd_list.Get(), upscaled, cas);
+
+                    copier.copy(upscaled, backbuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PRESENT);
                 }
             }
         }
@@ -554,10 +615,10 @@ void TemporalUpscaler::on_early_present() {
             once = false;
         }
         if (m_afw_backend_loaded && d3d12Renderer && cmdList) {
-            if (m_enable_ui_fix->value() && !is_vr_multipass  && extractedUIBufferDesc.pTexture && finalColorDesc.pTexture) {
+            if (m_enable_ui_fix->value() && !is_vr_multipass && extractedUIBufferDesc[eye_index].pTexture && finalColorDesc.pTexture) {
                 CD3DX12_VIEWPORT vp(backbufferDesc[backbuffer_index].pTexture);
                 auto blend = debug2 ? OneMinusSrcAlpha : NoBlend;
-                d3d12Renderer->Blit(cmdList, backbufferDesc[backbuffer_index], extractedUIBufferDesc, vp, blend);
+                d3d12Renderer->Blit(cmdList, backbufferDesc[backbuffer_index], extractedUIBufferDesc[eye_index], vp, blend);
             }
             d3d12Renderer->EndCommandList(backbuffer_index);
         }

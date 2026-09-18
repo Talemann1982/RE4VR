@@ -268,6 +268,16 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E echo "Generating commit hash..."
     COMMAND ${CMAKE_COMMAND} -E chdir ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/MakeCommitHash.bat
 )
+
+# [TAUNT-WAV 2026-09-12] Eigene Sprach-WAVs als WAVE-Resource IN die DLL, plus
+# winmm fuer PlaySound(SND_RESOURCE). NUR RE4 -- sonst tragen alle anderen
+# Spiel-DLLs die 3,3 MB mit. Muss hier stehen und nicht unter [target.RE4]:
+# das game-Template fuellt target_sources aus ${CMKR_TARGET}_SOURCES, eigene
+# sources-/link-libraries-Felder am Target werden von cmkr verworfen (gemessen).
+if(CMKR_TARGET STREQUAL "RE4")
+    target_sources(${CMKR_TARGET} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/resources/re4_taunts.rc")
+    target_link_libraries(${CMKR_TARGET} PRIVATE winmm)
+endif()
 """
 
 [template.game.properties]
@@ -314,6 +324,8 @@ type = "game"
 
 [target.RE4]
 type = "game"
+# Die eingebetteten Taunt-WAVs + winmm haengen in der cmake-after des
+# game-Templates (dort auf RE4 gefiltert) -- s. Begruendung dort.
 
 [target.RE4SDK]
 type = "sdk"

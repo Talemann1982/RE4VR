@@ -950,6 +950,38 @@ Vector2f OpenXR::get_left_stick_axis() const {
     return *(Vector2f*)&axis.currentState;
 }
 
+// [TRACKPAD 15.09.2026] Immer die touchpad-Action, egal ob das Profil einen
+// Stick hat. Controller ohne Trackpad haben die Action nicht gebunden und
+// liefern hier schlicht 0 -- fuer sie aendert sich nichts.
+Vector2f OpenXR::get_touchpad_axis(VRRuntime::Hand hand) const {
+    if (!this->action_set.action_map.contains("touchpad")) {
+        return Vector2f{};
+    }
+
+    const auto& h = this->hands[hand];
+    auto profile_it = h.profiles.find(this->get_current_interaction_profile());
+
+    if (profile_it == h.profiles.end()) {
+        return Vector2f{};
+    }
+
+    XrActionStateGetInfo get_info{XR_TYPE_ACTION_STATE_GET_INFO};
+    get_info.action = this->action_set.action_map.find("touchpad")->second;
+    get_info.subactionPath = h.path;
+
+    XrActionStateVector2f axis{XR_TYPE_ACTION_STATE_VECTOR2F};
+
+    if (xrGetActionStateVector2f(this->session, &get_info, &axis) != XR_SUCCESS) {
+        return Vector2f{};
+    }
+
+    if (!axis.isActive) {
+        return Vector2f{};
+    }
+
+    return *(Vector2f*)&axis.currentState;
+}
+
 Vector2f OpenXR::get_right_stick_axis() const {
     if (!this->action_set.action_map.contains("joystick")) {
         return Vector2f{};

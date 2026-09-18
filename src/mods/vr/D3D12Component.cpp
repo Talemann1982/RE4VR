@@ -171,8 +171,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     FrameWarpEvaluateParams params;
     if (vr->is_using_afw() && (!m_eyeFrameBuffers.eyeFrameBuffers[0].color.pTexture || !m_eyeFrameBuffers.eyeFrameBuffers[1].color.pTexture))
         force_reset();
-    if (vr->is_using_afw() && m_eyeFrameBuffers.eyeFrameBuffers[0].color.pTexture && vr->depthTex && vr->motionVectorsTex && vr->m_framewarp_mode->value() > 0) {
-        static TextureDesc texDesc[4];
+    if (vr->is_using_afw() && m_eyeFrameBuffers.eyeFrameBuffers[0].color.pTexture && 
+        vr->m_eye_states[nEye].depth_copy && vr->m_eye_states[nEye].motion_vectors_copy && vr->m_framewarp_mode->value() > 0) {
+        static TextureDesc texDesc[6];
         int texIndex = m_backbuffer_is_8bit ? backbuffer_index : 3;
         if (texDesc[texIndex].pTexture != eye_texture.Get()) {
             texDesc[texIndex].pTexture = eye_texture.Get();
@@ -180,43 +181,65 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             texDesc[texIndex].srvPos = vr->d3d12Renderer->CreateSRV(texDesc[texIndex].pTexture, texDesc[texIndex].srvPos);
             texDesc[texIndex].shaderResourceViewHandle = vr->d3d12Renderer->GetGPUDescriptorHandle(texDesc[texIndex].srvPos);
         }
-        static TextureDesc depthDesc;
-        if (depthDesc.pTexture != vr->depthTex) {
-            depthDesc.pTexture = vr->depthTex;
-            depthDesc.initialState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-            depthDesc.srvPos = vr->d3d12Renderer->CreateSRV(depthDesc.pTexture, depthDesc.srvPos);
-            depthDesc.shaderResourceViewHandle = vr->d3d12Renderer->GetGPUDescriptorHandle(depthDesc.srvPos);
+
+        const auto& state = vr->m_eye_states[nEye];
+
+        const auto motion_vectors = state.motion_vectors_copy->get_d3d12_resource_container()->get_native_resource();
+        const auto depth = state.depth_copy->get_d3d12_resource_container()->get_native_resource();
+
+        static TextureDesc depthDesc[2];
+        if (depthDesc[nEye].pTexture != depth) {
+            depthDesc[nEye].pTexture = depth;
+            depthDesc[nEye].initialState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            depthDesc[nEye].srvPos = vr->d3d12Renderer->CreateSRV(depthDesc[nEye].pTexture, depthDesc[nEye].srvPos);
+            depthDesc[nEye].shaderResourceViewHandle = vr->d3d12Renderer->GetGPUDescriptorHandle(depthDesc[nEye].srvPos);
         }
-        static TextureDesc motionVectorsDesc;
-        if (motionVectorsDesc.pTexture != vr->motionVectorsTex) {
-            motionVectorsDesc.pTexture = vr->motionVectorsTex;
-            motionVectorsDesc.initialState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-            motionVectorsDesc.srvPos = vr->d3d12Renderer->CreateSRV(motionVectorsDesc.pTexture, motionVectorsDesc.srvPos);
-            motionVectorsDesc.shaderResourceViewHandle = vr->d3d12Renderer->GetGPUDescriptorHandle(motionVectorsDesc.srvPos);
+        static TextureDesc motionVectorsDesc[2];
+        if (motionVectorsDesc[nEye].pTexture != motion_vectors) {
+            motionVectorsDesc[nEye].pTexture = motion_vectors;
+            motionVectorsDesc[nEye].initialState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            motionVectorsDesc[nEye].srvPos = vr->d3d12Renderer->CreateSRV(motionVectorsDesc[nEye].pTexture, motionVectorsDesc[nEye].srvPos);
+            motionVectorsDesc[nEye].shaderResourceViewHandle = vr->d3d12Renderer->GetGPUDescriptorHandle(motionVectorsDesc[nEye].srvPos);
         }
-        static TextureDesc uiBufferDesc;
-        if (vr->m_enable_ui_fix->value() && vr->uiBufferTex) {
-            uiBufferDesc.pTexture = vr->uiBufferTex;
-            uiBufferDesc.initialState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-            uiBufferDesc.srvPos = vr->d3d12Renderer->CreateSRV(uiBufferDesc.pTexture, uiBufferDesc.srvPos);
-            uiBufferDesc.shaderResourceViewHandle = vr->d3d12Renderer->GetGPUDescriptorHandle(uiBufferDesc.srvPos);
-            uiBufferDesc.renderTargetViewHandle = vr->d3d12Renderer->GetRTV(uiBufferDesc.pTexture);
+        static TextureDesc uiBufferDesc[2];
+        if (vr->m_enable_ui_fix->value() && state.uiBufferTex) {
+            uiBufferDesc[nEye].pTexture = state.uiBufferTex.Get();
+            uiBufferDesc[nEye].initialState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            uiBufferDesc[nEye].srvPos = vr->d3d12Renderer->CreateSRV(uiBufferDesc[nEye].pTexture, uiBufferDesc[nEye].srvPos);
+            uiBufferDesc[nEye].shaderResourceViewHandle = vr->d3d12Renderer->GetGPUDescriptorHandle(uiBufferDesc[nEye].srvPos);
+            uiBufferDesc[nEye].renderTargetViewHandle = vr->d3d12Renderer->GetRTV(uiBufferDesc[nEye].pTexture);
         }
         static FrameBufferDesc s_CurrentEyeFrameBuffer{};
 
         s_CurrentEyeFrameBuffer.color = texDesc[texIndex];
-        s_CurrentEyeFrameBuffer.depth = depthDesc;
-        s_CurrentEyeFrameBuffer.motionVectors = motionVectorsDesc;
+        s_CurrentEyeFrameBuffer.depth = depthDesc[nEye];
+        s_CurrentEyeFrameBuffer.motionVectors = motionVectorsDesc[nEye];
 
-        auto cmdList = vr->d3d12Renderer->BeginCommandList(backbuffer_index);
+        // ====================================================================
+        // [AFW-CRASHFIX -- portiert aus PureDark 60af419 am 07.09.2026]
+        // "using REFramework's command list instead of the AFW plugin's to
+        // prevent crashing". Die Command-List des AFW-Plugins
+        // (d3d12Renderer->BeginCommandList) stuerzte auf NVIDIA-Karten ab;
+        // stattdessen wird REFrameworks eigener CommandContext benutzt.
+        // Der Slot ist bewusst (backbuffer_index + 1): Slot backbuffer_index
+        // gehoert der Backbuffer-Kopie weiter oben in dieser Datei, beide
+        // wuerden sich sonst dieselbe Liste teilen.
+        // Uebernommen war zuerst NUR dieser Crashfix. [16.09.2026] Die
+        // OpenXR-Copy-Quelle (eye_texture) ist jetzt auch drin; Debug-Tasten
+        // und DLAA->NATIVE-Umbenennung bleiben draussen (sichtbar/Eingabe).
+        // ====================================================================
+        auto& afw_commands =
+            m_backbuffer_copy_commands[(backbuffer_index + 1) % m_backbuffer_copy_commands.size()];
+        auto cmdList = afw_commands.cmd_list.Get();
+        afw_commands.wait(INFINITE);
         params.InCmdList = cmdList;
         params.InEyeFrameBuffer = &s_CurrentEyeFrameBuffer;
-        if (vr->m_enable_ui_fix->value() && vr->uiBufferTex) {
-            params.InUIColorAlpha = &uiBufferDesc;
+        if (vr->m_enable_ui_fix->value() && state.uiBufferTex) {
+            params.InUIColorAlpha = &uiBufferDesc[nEye];
             params.IsHudlessColor = false;
         } else if (vr->m_enable_ui_fix->value() && TemporalUpscaler::get()->is_enabled_ui_fix() &&
-                   TemporalUpscaler::get()->extractedUIBufferDesc.pTexture) {
-            params.InUIColorAlpha = &TemporalUpscaler::get()->extractedUIBufferDesc;
+                   TemporalUpscaler::get()->extractedUIBufferDesc[nEye].pTexture) {
+            params.InUIColorAlpha = &TemporalUpscaler::get()->extractedUIBufferDesc[nEye];
             params.IsHudlessColor = false;
         } else {
             params.InUIColorAlpha = NULL;
@@ -235,7 +258,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         params.IgnoreMotionThreshold = vr->m_ignore_motion_threshold->value();
         params.Debug = vr->m_framewarp_debug->value();
         EvaluateFrameWarp(params);
-        vr->d3d12Renderer->EndCommandList(backbuffer_index);
+        // [AFW-CRASHFIX] Gegenstueck zu oben: statt EndCommandList des Plugins
+        // wird der eigene CommandContext ausgefuehrt.
+        afw_commands.has_commands = true;
+        afw_commands.execute();
     }
     //#############################
     //#Frame Warp Module End
@@ -269,7 +295,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         if (runtime->is_openxr() && vr->m_openxr->ready()) {
             // Quelle und Resource-State bleiben die des AFW-Forks; ergaenzt ist nur die
             // CopyFn, mit der ein Auge unter OpenXR schwarz bleibt (VR::get_blank_eye).
-            m_openxr.copy(0, m_openvr.get_left().texture.Get(), nullptr, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, xr_fn(0));
+            //m_openxr.copy(0, m_openvr.get_left().texture.Get(), nullptr, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, xr_fn(0));
+            m_openxr.copy(0, eye_texture.Get(), nullptr, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, xr_fn(0));
             if (vr->is_using_afw()) {
                 m_openxr.copy(1, m_openvr.get_right().texture.Get(), nullptr, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, xr_fn(1));
             }
@@ -406,7 +433,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 vr->m_multipass.eye_textures[1].Reset();
             } else {
                 // wie oben: AFW-Quelle/State, plus die CopyFn fuer das geschwaerzte Auge
-                m_openxr.copy(1, m_openvr.get_right().texture.Get(), nullptr, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, xr_fn(1));
+                //m_openxr.copy(1, m_openvr.get_right().texture.Get(), nullptr, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, xr_fn(1));
+                m_openxr.copy(1, eye_texture.Get(), nullptr, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, xr_fn(1));
                 if (vr->is_using_afw()) {
                     m_openxr.copy(0, m_openvr.get_left().texture.Get(), nullptr, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, xr_fn(0));
                 }
@@ -537,7 +565,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
 
         if (runtime->is_openxr() && vr->m_openxr->ready()) {
-            if (runtime->get_synchronize_stage() == VRRuntime::SynchronizeStage::VERY_LATE || !vr->m_openxr->frame_began) {
+            if (!vr->m_openxr->frame_began) {
                 vr->m_openxr->begin_frame();
             }
 
@@ -1172,9 +1200,9 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
                 return "Failed to wait for swapchain image.";
             }
 
-            ctx.texture_contexts[real_index] = std::make_unique<d3d12::TextureContext>();
-            ctx.texture_contexts[real_index]->setup(device, ctx.textures[real_index].texture, swapchain_format, swapchain_format,
-                (std::wstring{L"OpenXR Swapchain "} + std::to_wstring(i) + L" " + std::to_wstring(real_index)).c_str());
+            ctx.texture_contexts[j] = std::make_unique<d3d12::TextureContext>();
+            ctx.texture_contexts[j]->setup(device, ctx.textures[j].texture, swapchain_format, swapchain_format,
+                (std::wstring{L"OpenXR Swapchain "} + std::to_wstring(i) + L" " + std::to_wstring(j)).c_str());
 
             XrSwapchainImageReleaseInfo release_info{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
             result = xrReleaseSwapchainImage(swapchain.handle, &release_info);
@@ -1244,10 +1272,10 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
                             XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
                             xrWaitSwapchainImage(sc.handle, &wi);
 
-                            cctx.texture_contexts[real_index] = std::make_unique<d3d12::TextureContext>();
-                            cctx.texture_contexts[real_index]->setup(device, cctx.textures[real_index].texture,
+                            cctx.texture_contexts[j] = std::make_unique<d3d12::TextureContext>();
+                            cctx.texture_contexts[j]->setup(device, cctx.textures[j].texture,
                                 swapchain_format, swapchain_format,
-                                (std::wstring{L"OpenXR Flatscreen "} + std::to_wstring(real_index)).c_str());
+                                (std::wstring{L"OpenXR Flatscreen "} + std::to_wstring(j)).c_str());
 
                             XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
                             xrReleaseSwapchainImage(sc.handle, &ri);
@@ -1276,11 +1304,34 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
         if (SUCCEEDED(swapchain->GetBuffer(0, IID_PPV_ARGS(&bb)))) {
             const auto bb_desc = bb->GetDesc();
 
+            // [XR_UI_FARBEN 2026-09-09] Das Slate bekommt NICHT swapchain_format,
+            // sondern die Kanalreihenfolge seiner QUELLE.
+            //
+            // Die Quelle ist REFrameworks ImGui-Rendertarget, und das ist hart
+            // DXGI_FORMAT_R8G8B8A8_UNORM (REFramework.cpp, Kommentar dort: "For
+            // VR"). swapchain_format folgt dagegen dem Backbuffer -- im Multipass
+            // ist das B8G8R8A8 (Log: "Format: 87"). RGBA-Quelle in ein
+            // BGRA-Ziel kopiert heisst: R und B vertauscht. Sichtbar wurde es an
+            // den Farbknoepfen fuer Laser/Crosshair -- "Red" stand in blauer
+            // Schrift, ebenso alle orangen Ueberschriften. Unter OpenVR faellt es
+            // nicht auf, weil die Flaeche dort ueber vr::VROverlay laeuft.
+            //
+            // Die _SRGB-Variante bleibt wie gehabt -- geaendert wird NUR die
+            // Kanalreihenfolge, an Helligkeit/Gamma damit nichts.
+            //
+            // Betroffen ist ausschliesslich dieses Slate: es wird nur befuellt,
+            // solange `ui_layer` steht (also das Framework-Menue offen ist).
+            // Augen-Swapchains und Flatscreen-Leinwand behalten swapchain_format.
+            const DXGI_FORMAT ui_slate_format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+
             XrSwapchainCreateInfo ci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
             ci.arraySize = 1;
-            ci.format = swapchain_format;
-            ci.width = (uint32_t)bb_desc.Width;
-            ci.height = (uint32_t)bb_desc.Height;
+            ci.format = ui_slate_format;
+            // [VR-MENUE-KONTEXT 11.09.2026] Groesse des VR-Menues statt des
+            // Backbuffers -- REFrameworks VR-Rendertarget ist jetzt genau so gross,
+            // die Kopie in D3D12Component::on_frame passt damit 1:1.
+            ci.width = (uint32_t)REFramework::VR_MENU_WIDTH;
+            ci.height = (uint32_t)REFramework::VR_MENU_HEIGHT;
             ci.mipCount = 1;
             ci.faceCount = 1;
             ci.sampleCount = 1;
@@ -1291,7 +1342,22 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
             sc.width = ci.width;
             sc.height = ci.height;
 
-            if (xrCreateSwapchain(openxr->session, &ci, &sc.handle) == XR_SUCCESS) {
+            // [RUECKFALL] Bietet die Laufzeit das Format nicht an, waere sonst gar
+            // kein Menue mehr im Headset -- schlechter als falsche Farben. Also
+            // zurueck auf das bisherige Format, dann ist das Verhalten exakt das
+            // von vorher.
+            auto slate_format = ui_slate_format;
+            auto slate_res = xrCreateSwapchain(openxr->session, &ci, &sc.handle);
+
+            if (slate_res != XR_SUCCESS) {
+                spdlog::warn("[VR] UI slate: format {} refused by runtime, falling back to {}.",
+                             (uint32_t)ui_slate_format, (uint32_t)swapchain_format);
+                ci.format = swapchain_format;
+                slate_format = swapchain_format;
+                slate_res = xrCreateSwapchain(openxr->session, &ci, &sc.handle);
+            }
+
+            if (slate_res == XR_SUCCESS) {
                 const auto ui_idx = (uint32_t)openxr->views.size() + 1;
                 openxr->swapchains.push_back(sc);
 
@@ -1321,16 +1387,17 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
                             XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
                             xrWaitSwapchainImage(sc.handle, &wi);
 
-                            uctx.texture_contexts[real_index] = std::make_unique<d3d12::TextureContext>();
-                            uctx.texture_contexts[real_index]->setup(device, uctx.textures[real_index].texture,
-                                swapchain_format, swapchain_format,
-                                (std::wstring{L"OpenXR UI Slate "} + std::to_wstring(real_index)).c_str());
+                            uctx.texture_contexts[j] = std::make_unique<d3d12::TextureContext>();
+                            uctx.texture_contexts[j]->setup(device, uctx.textures[j].texture,
+                                slate_format, slate_format,
+                                (std::wstring{L"OpenXR UI Slate "} + std::to_wstring(j)).c_str());
 
                             XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
                             xrReleaseSwapchainImage(sc.handle, &ri);
                         }
 
-                        spdlog::info("[VR] OpenXR UI slate swapchain: {}x{} ({} images)", sc.width, sc.height, image_count);
+                        spdlog::info("[VR] OpenXR UI slate swapchain: {}x{} ({} images), format {}",
+                                     sc.width, sc.height, image_count, (uint32_t)slate_format);
                     }
                 }
             } else {
@@ -1423,7 +1490,9 @@ void D3D12Component::OpenXR::copy(
         spdlog::info("[VR] Attempting to correct...");
 
         for (auto& texture_ctx : ctx.texture_contexts) {
-            texture_ctx->commands.reset();
+            if (texture_ctx != nullptr) {
+                texture_ctx->commands.reset();
+            }
         }
 
         texture_index = 0;
@@ -1443,6 +1512,14 @@ void D3D12Component::OpenXR::copy(
 
         if (result != XR_SUCCESS) {
             spdlog::error("[VR] xrWaitSwapchainImage failed: {}", vr->m_openxr->get_result_string(result));
+        } else if (texture_index >= ctx.texture_contexts.size() || ctx.texture_contexts[texture_index] == nullptr) {
+            // [PIMAX 16.09.2026] Letzte Sicherung: nie in einen fehlenden Kontext kopieren,
+            // das Bild nur zurueckgeben. Kostet einen Frame statt eines Absturzes.
+            XrSwapchainImageReleaseInfo release_info{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+
+            if (xrReleaseSwapchainImage(swapchain.handle, &release_info) == XR_SUCCESS) {
+                ctx.num_textures_acquired--;
+            }
         } else {
             auto& texture_ctx = ctx.texture_contexts[texture_index];
             texture_ctx->commands.wait(INFINITE);
@@ -1533,7 +1610,9 @@ void D3D12Component::OpenXR::copy(
                 }
 
                 for (auto& texture_ctx : ctx.texture_contexts) {
-                    texture_ctx->commands.wait(INFINITE);
+                    if (texture_ctx != nullptr) {
+                        texture_ctx->commands.wait(INFINITE);
+                    }
                 }
 
                 result = xrReleaseSwapchainImage(swapchain.handle, &release_info);

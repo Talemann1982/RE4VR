@@ -46,6 +46,10 @@ std::string VR::actions_json = R"(
       "type": "boolean"
     },
     {
+      "name": "/actions/default/in/TouchpadForce",
+      "type": "vector1"
+    },
+    {
       "name": "/actions/default/in/Joystick",
       "type": "vector2"
     },

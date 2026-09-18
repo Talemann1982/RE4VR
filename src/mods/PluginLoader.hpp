@@ -1,5 +1,8 @@
 #pragma once
 
+#include <filesystem>
+#include <vector>
+
 #include <map>
 #include <mutex>
 
@@ -37,9 +40,20 @@ public:
 
     std::string_view get_name() const override { return "PluginLoader"; }
     std::optional<std::string> on_initialize() override;
+    void on_frame() override;
     void on_draw_ui() override;
 
 private:
+    // [MCP/.NET 15.09.2026] Aus dem Upstream: die eigentliche Plugin-Init
+    // laeuft verzoegert aus on_frame und genau einmal -- waehrend Roslyn die
+    // C#-Quellen kompiliert, darf D3D nicht neu gehookt werden.
+    void init_d3d_pointers();
+    std::optional<std::string> initialize_plugins();
+
+    bool m_plugins_loaded{false};
+    // [.NET SPAETER 15.09.2026] Plugins, die erst nach der VR-Init geladen
+    // werden (REFramework.NET + Ijwhost) -- alle anderen bleiben frueh.
+    std::vector<std::filesystem::path> m_deferred_plugins{};
     std::mutex m_mux{};
     std::map<std::string, HMODULE> m_plugins{};
     std::map<std::string, std::string> m_plugin_load_errors{};

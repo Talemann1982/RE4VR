@@ -1,4 +1,8 @@
 #include "Mods.hpp"
+
+#if defined(RE4)
+#include "mods/vr/games/RE4VR.hpp"
+#endif
 #include "REFramework.hpp"
 #include <utility/Scan.hpp>
 #include <utility/Module.hpp>
@@ -980,13 +984,17 @@ void Hooks::global_application_entry_hook_internal(void* entry, const char* name
 
         auto& mods = g_framework->get_mods()->get_mods();
 
+        // [FRAMETIME-MESSUNG] Pro MODUL, nicht pro Phase -- nur wenn im Tree
+        // "RE4VR - Frametimes" eingeschaltet, sonst ein Vergleich pro Modul.
         for (auto& mod : mods) {
+            re4vr::perf::Scope _p{mod->get_name(), name};
             mod->on_pre_application_entry(entry, name, hash);
         }
-        
+
         original(entry);
 
         for (auto& mod : mods) {
+            re4vr::perf::Scope _p{mod->get_name(), name};
             mod->on_application_entry(entry, name, hash);
         }
     }

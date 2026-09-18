@@ -37,10 +37,19 @@ class REManagedObject;
 class VR : public Mod {
 public:
     CameraData cameraData[2];
-    ID3D12Resource* depthTex = NULL;
-    ID3D12Resource* motionVectorsTex = NULL;
-    ID3D12Resource* uiBufferTex = NULL;
     D3D12RendererAPI* d3d12Renderer = nullptr;
+    
+    template <typename T> using ComPtr = Microsoft::WRL::ComPtr<T>;
+    struct EyeState {
+        ComPtr<ID3D12Resource> motion_vectors{};
+        ComPtr<ID3D12Resource> depth{};
+        ComPtr<ID3D12Resource> uiBufferTex{};
+
+        sdk::intrusive_ptr<sdk::renderer::Texture> motion_vectors_copy{};
+        sdk::intrusive_ptr<sdk::renderer::Texture> depth_copy{};
+    };
+
+    std::array<EyeState, 2> m_eye_states{};
     
     int m_camera_data_update_frame_count{};
     void update_camera_data();
@@ -86,7 +95,7 @@ public:
     void draw_rendering_technique_ui();
     // Bare "Recenter View" button, drawn at the very top of the REFramework window
     // (REFramework.cpp) because the whole VR tree is hidden by the mod filter in Mods.cpp.
-    void draw_recenter_button();
+    bool draw_recenter_button();   // true = Knopf wurde gezeichnet
     // Bare "Resolution Scale" slider, same reason as draw_recenter_button. OpenXR only.
     // Returns true when the config should be saved.
     bool draw_resolution_scale_slider();
@@ -171,7 +180,44 @@ public:
     // Functions that generally use a mutex or have more complex logic
     float get_standing_height();
     Vector4f get_standing_origin();
+
+    // [ROOMSCALE-KAMERA 16.09.2026] Hoehe, die das Bein-IK gerade ueber Leons Kopf
+    // uebernimmt (<= 0). Die Spielkamera haengt am Charakter und sinkt damit
+    // schon mit -- ohne Ausgleich zoege der Headset-Versatz dieselbe Hoehe ein
+    // zweites Mal ab. Gesetzt NUR von RE4VRMovement::roomscale(), sonst immer 0.
+    void set_roomscale_camera_y_comp(float y) { m_roomscale_camera_y_comp = y; }
+    float get_roomscale_camera_y_comp() const { return m_roomscale_camera_y_comp; }
+
+    // [KAMERA-IST-HOEHE 16.09.2026] Hoehe von Leons Body-Transform, gemeldet von
+    // roomscale(). Damit misst apply_hmd_transform, wie weit die Spielkamera
+    // TATSAECHLICH unter ihrer Stehhoehe liegt -- statt das IK-Soll abzuziehen.
+    // clear_* verwirft auch die gelernte Stehhoehe (Body kann gewechselt sein).
+    void set_roomscale_body_y(float y) { m_rs_body_y = y; m_rs_body_y_valid = true; }
+    void clear_roomscale_body() {
+        m_rs_body_y_valid = false;
+        m_rs_base_stand_valid = false;
+        m_rs_drop_smooth = 0.0f;
+        m_rs_drop_t_valid = false;
+    }
     void set_standing_origin(const Vector4f& origin);
+
+    // s. set_roomscale_camera_y_comp. 0 = kein Ausgleich (ohne Roomscale immer).
+    float m_roomscale_camera_y_comp{0.0f};
+
+    // [KAMERA-IST-HOEHE 16.09.2026] s. set_roomscale_body_y. Ohne Roomscale bleibt
+    // m_rs_body_y_valid false -- dann rechnet die Kamera wie immer.
+    float m_rs_body_y{0.0f};
+    bool  m_rs_body_y_valid{false};
+    float m_rs_base_stand{0.0f};
+    bool  m_rs_base_stand_valid{false};
+
+    // [KAMERA-LERP 16.09.2026 -- Ansage des Users: "lerpen, aber schneller, nah an
+    // 1:1"] Geglaettet wird NUR der Ausgleich, nie die Kopfbewegung selbst.
+    // Ueber echte Zeit, damit zwei Aufrufe pro Frame (je Auge) nicht doppelt
+    // so schnell glaetten.
+    float m_rs_drop_smooth{0.0f};
+    std::chrono::steady_clock::time_point m_rs_drop_t{};
+    bool  m_rs_drop_t_valid{false};
 
     glm::quat get_rotation_offset();
     void set_rotation_offset(const glm::quat& offset);
@@ -619,6 +665,16 @@ public:
     bool is_hand_behind_head(VRRuntime::Hand hand, float sensitivity = 0.2f) const;
     bool is_action_active(vr::VRActionHandle_t action, vr::VRInputValueHandle_t source = vr::k_ulInvalidInputValueHandle) const;
 
+    // [MENUE-STEUERUNG 11.09.2026] Solange das Mod-Menue offen ist (und kurz danach,
+    // bis alles losgelassen ist), liefern is_action_active und get_*_stick_axis
+    // NICHTS -- die zentrale Stelle, ueber die alle RE4VR-Module und Lua die
+    // Controller lesen. Das Menue selbst liest ueber die _raw-Varianten.
+    bool is_action_active_raw(vr::VRActionHandle_t action, vr::VRInputValueHandle_t source = vr::k_ulInvalidInputValueHandle) const;
+    bool is_menu_input_blocked() const;
+    void set_menu_release_guard(bool on) { m_menu_release_guard = on; }
+    bool is_menu_release_guard() const { return m_menu_release_guard; }
+    bool m_menu_release_guard{false};
+
     // [GRIP_FORCE] Everything about the grip threshold is configured from Lua
     // (autorun/re4_vr_capacitive.lua) -- deliberately NO UI in the framework.
     // hand: 0 = left, 1 = right.
@@ -651,6 +707,11 @@ public:
     Vector2f get_left_stick_axis() const;
     Vector2f get_right_stick_axis() const;
 
+    // [MENUE-STEUERUNG 11.09.2026] Ungesperrt, nur fuers Mod-Menue.
+    Vector2f get_joystick_axis_raw(vr::VRInputValueHandle_t handle) const;
+    Vector2f get_left_stick_axis_raw() const;
+    Vector2f get_right_stick_axis_raw() const;
+
     void trigger_haptic_vibration(float seconds_from_now, float duration, float frequency, float amplitude, vr::VRInputValueHandle_t source = vr::k_ulInvalidInputValueHandle);
     
     auto get_action_set() const { return m_action_set; }
@@ -669,6 +730,18 @@ public:
     auto get_action_dpad_left() const { return m_action_dpad_left; }
     auto get_action_dpad_right() const { return m_action_dpad_right; }
     auto get_action_heal() const { return m_action_heal; }
+    auto get_action_touchpad_click() const { return m_action_touchpad_click; }
+    auto get_action_touchpad() const { return m_action_touchpad; }
+    // [TRACKPAD 15.09.2026] Rohe Trackpad-Achse der rechten Hand, unabhaengig
+    // vom Stick. 0 auf Controllern ohne Trackpad.
+    Vector2f get_right_touchpad_axis() const;
+    // [TRACKPAD-PRESS 15.09.2026] "Gedrueckt?" fuer beide Runtimes: unter
+    // OpenVR der Klick, unter OpenXR die Kraft gegen eine Schwelle.
+    bool is_touchpad_pressed(VRRuntime::Hand hand) const;
+    // [DIAGNOSE 15.09.2026] Rohe Kraft am Trackpad (nur OpenXR/Index), fuer die
+    // Anzeige im Dev-Tree.
+    float get_touchpad_force(VRRuntime::Hand hand) const;
+    auto get_action_touchpad_force() const { return m_action_touchpad_force; }
     auto get_left_joystick() const { return m_left_joystick; }
     auto get_right_joystick() const { return m_right_joystick; }
 
@@ -720,6 +793,7 @@ private:
 
     bool on_pre_overlay_layer_update(sdk::renderer::layer::Overlay* layer, void* render_context) override;
     bool on_pre_overlay_layer_draw(sdk::renderer::layer::Overlay* layer, void* render_context) override;
+    void on_overlay_layer_draw(sdk::renderer::layer::Overlay* overlay_layer, void* render_context) override;
 
     bool on_pre_post_effect_layer_update(sdk::renderer::layer::PostEffect* layer, void* render_context) override;
     bool on_pre_post_effect_layer_draw(sdk::renderer::layer::PostEffect* layer, void* render_context) override;
@@ -909,6 +983,14 @@ private:
     vr::VRActionHandle_t m_action_block{};
     vr::VRActionHandle_t m_action_haptic{};
     vr::VRActionHandle_t m_action_heal{};
+    // [TRACKPAD 15.09.2026] Klick auf das Trackpad (Valve Index). OPTIONAL wie
+    // GripValue/GripForce: Controller ohne Trackpad (Quest) binden die Aktion
+    // nicht, das darf die VR-Initialisierung NIE abbrechen.
+    vr::VRActionHandle_t m_action_touchpad_click{};
+    // [TRACKPAD] Achse des Trackpads (vector2), ebenfalls optional.
+    vr::VRActionHandle_t m_action_touchpad{};
+    // [TRACKPAD-PRESS] Kraft am Trackpad (Index, OpenXR) -- optional.
+    vr::VRActionHandle_t m_action_touchpad_force{};
 
     bool m_was_firstperson_toggle_down{false};
     bool m_was_flashlight_toggle_down{false};
@@ -919,6 +1001,9 @@ private:
         { "/actions/default/in/Grip", m_action_grip },
         { "/actions/default/in/GripValue", m_action_grip_value },
         { "/actions/default/in/GripForce", m_action_grip_force },
+        { "/actions/default/in/TouchpadClick", m_action_touchpad_click },
+        { "/actions/default/in/Touchpad", m_action_touchpad },
+        { "/actions/default/in/TouchpadForce", m_action_touchpad_force },
         { "/actions/default/in/Joystick", m_action_joystick },
         { "/actions/default/in/JoystickClick", m_action_joystick_click },
         { "/actions/default/in/AButton", m_action_a_button },
@@ -1078,7 +1163,7 @@ private:
             "Alternating/AFR", 
             "Two Frame Sequential", 
             "Single Frame Multipass",
-            "AFW (experimental)"
+            "AFW (beta)"
         }, 
 #if TDB_VER < 69
         1 // Previous rendering technique
@@ -1107,7 +1192,9 @@ private:
     const ModSlider::Ptr m_ui_scale_option{ ModSlider::create(generate_name("2DUIScale"), 1.0f, 100.0f, 12.0f) };
     const ModSlider::Ptr m_ui_distance_option{ ModSlider::create(generate_name("2DUIDistance"), 0.01f, 100.0f, 1.0f) };
     const ModSlider::Ptr m_world_ui_scale_option{ ModSlider::create(generate_name("WorldSpaceUIScale"), 1.0f, 100.0f, 15.0f) };
-    const ModSlider::Ptr m_resolution_scale{ ModSlider::create(generate_name("OpenXRResolutionScale"), 0.1f, 5.0f, 1.0f) };
+    // [DEFAULT 12.09.2026] 0.5 statt 1.0 -- Neueinsteiger ohne Config starten mit der
+    // halben Runtime-Aufloesung, damit das Spiel erstmal fluessig laeuft.
+    const ModSlider::Ptr m_resolution_scale{ ModSlider::create(generate_name("OpenXRResolutionScale"), 0.1f, 5.0f, 0.5f) };
     // [POINTER_PITCH 2026-08-15] Neigung des Menue-Zeigestrahls, in GRAD um die eigene X-Achse
     // des rechten Controllers. Grund: gezeigt wird mit der GRIFF-Pose ("/user/hand/*/input/grip/pose"
     // bzw. der rohen OpenVR-Controller-Pose) -- deren -Z ist die Achse des Griffs, nicht die

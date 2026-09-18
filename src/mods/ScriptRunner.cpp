@@ -342,6 +342,25 @@ ScriptState::ScriptState(const ScriptState::GarbageCollectionData& gc_data,bool 
         // das Menue soll sich nicht bei jedem Umschalten in die Config eintragen.
         "set_draw_ui", [](REFramework* fw, bool state) { fw->set_draw_ui(state, false); },
         "get_game_name", &REFramework::get_game_name,
+        // [SCRIPTGATE 2026-09-02] echtes Aus/An fuer einzelne Scripte, aus Lua heraus.
+        // Muster (aus einer Datei, die sich selbst anlaesst):
+        //   reframework:set_all_scripts_enabled(false)
+        //   reframework:set_script_enabled("re4_vr_binding.lua", true)
+        //   reframework:request_reset_scripts()
+        // Namen sind die reinen Dateinamen aus dem autorun-Ordner.
+        "set_script_enabled", [](REFramework*, const std::string& name, bool enabled) {
+            if (auto sr = ScriptRunner::get()) { sr->set_script_enabled(name, enabled); }
+        },
+        "is_script_enabled", [](REFramework*, const std::string& name) -> bool {
+            if (auto sr = ScriptRunner::get()) { return sr->is_script_enabled(name); }
+            return true;
+        },
+        "set_all_scripts_enabled", [](REFramework*, bool enabled) {
+            if (auto sr = ScriptRunner::get()) { sr->set_all_scripts_enabled(enabled); }
+        },
+        "request_reset_scripts", [](REFramework*) {
+            if (auto sr = ScriptRunner::get()) { sr->request_reset_scripts(); }
+        },
         "get_version_string", []() -> std::string { 
             return (std::stringstream{} 
             << REFRAMEWORK_PLUGIN_VERSION_MAJOR << "." 
@@ -1033,6 +1052,18 @@ void ScriptRunner::on_frame() {
         spdlog::info("[ScriptRunner] Lua state initialized.");
     }
 
+    // [SCRIPTGATE] Angeforderter Reset aus Lua. Hier ist er sicher: wir sind
+    // ausserhalb jedes Lua-Callbacks, der State darf also weggeworfen werden.
+    // Danach raus aus dem Frame -- die frisch geladenen Scripte laufen ab dem
+    // naechsten.
+    if (m_needs_reset_request) {
+        m_needs_reset_request = false;
+
+        spdlog::info("[ScriptRunner] Reset requested from Lua -- reloading scripts.");
+        reset_scripts();
+        return;
+    }
+
     for (auto state_to_delete : m_states_to_delete) {
         std::erase_if(m_states, [&](std::shared_ptr<ScriptState> state) { return state->lua().lua_state() == state_to_delete; });
     }
@@ -1056,20 +1087,33 @@ void ScriptRunner::on_frame() {
     }
 }
 
-void ScriptRunner::on_draw_ui() {
+// [REF OPTIONS 10.09.2026] Der komplette "Scripts"-Baum -- gezeichnet von
+// Mods::draw_ref_trees() im Tree "REF Options", nicht mehr von on_draw_ui.
+void ScriptRunner::draw_scripts_tree(bool framed) {
     ImGui::SetNextItemOpen(false, ImGuiCond_::ImGuiCond_Once);
 
-    if (ImGui::CollapsingHeader("Scripts")) {
+    // [GLEICHER PFEIL 16.09.2026 -- Ansage des Users] Hier stand ein
+    // CollapsingHeader; sein Pfeil ist groesser als der der TreeNodes
+    // daneben. Gleiche Bauform wie die uebrigen Baeume.
+    // [RAHMEN 16.09.2026 -- Ansage des Users] Unter "REFramework Options" sind
+    // alle Nachbarn CollapsingHeader mit rotem Rahmen -- dort (framed) derselbe.
+    // Ein CollapsingHeader schiebt keine Ebene, also dann auch kein TreePop.
+    const bool open = framed ? ImGui::CollapsingHeader("Scripts") : ImGui::TreeNode("Scripts");
+
+    if (open) {
         if (m_last_online_match_state) {
             ImGui::TextWrapped("Online match detected. Scripts will not be loaded. Existing scripts have been unloaded.");
+            if (!framed) {
+                ImGui::TreePop();
+            }
             return;
         }
 
-        // [RE4VR-UI] Im "Scripts"-Header bleiben nur der "Reset scripts"-Button und die
-        // Script-Liste mit den Haken sichtbar. Alles andere ist NUR AUSGEBLENDET, nicht
-        // entfernt: die Werte dahinter (GC-Optionen, Log-to-Disk) werden weiterhin aus
-        // der Config geladen und wirken wie bisher.
-#if 0
+        // [RE4VR-UI -- 10.09.2026 WIEDER AN] Hier standen zwei #if-0-Bloecke: der
+        // "Run script"-Button und alles ab "Spawn Debug Console" (GC-Stats,
+        // GC-Optionen, Log-to-Disk, letzter Script-Fehler). Sie waren nur
+        // ausgeblendet, ihre Werte kamen die ganze Zeit aus der Config -- jetzt
+        // sind sie wieder bedienbar, weggeraeumt im Tree "REF Options".
         if (ImGui::Button("Run script")) {
             OPENFILENAME ofn{};
             char file[260]{};
@@ -1089,13 +1133,11 @@ void ScriptRunner::on_draw_ui() {
         }
 
         ImGui::SameLine();
-#endif
 
         if (ImGui::Button("Reset scripts")) {
             reset_scripts();
         }
 
-#if 0
         ImGui::SameLine();
 
         if (ImGui::Button("Spawn Debug Console")) {
@@ -1173,7 +1215,6 @@ void ScriptRunner::on_draw_ui() {
         } else {
             ImGui::TextWrapped("No Script Errors... yet!");
         }
-#endif
 
         if (!m_known_scripts.empty()) {
             ImGui::Text("Known scripts:");
@@ -1187,26 +1228,25 @@ void ScriptRunner::on_draw_ui() {
         } else {
             ImGui::Text("No scripts loaded.");
         }
-    }
 
+        if (!framed) {
+            ImGui::TreePop();
+        }
+    }
+}
+
+void ScriptRunner::on_draw_ui() {
     if (!m_last_online_match_state) { 
         std::scoped_lock _{ m_access_mutex };
 
 
-        // [RE4VR-UI] "Mod Options" ist der Tree, in dem die Mod-Scripte ihre Regler
-        // ablegen - er soll IMMER offen aufgehen. SetNextItemOpen statt des Flags
-        // ImGuiTreeNodeFlags_DefaultOpen: das Flag greift nur, solange ImGui fuer den
-        // Header noch nichts in seiner ini stehen hat; einmal von Hand zugeklappt,
-        // bliebe er fuer immer zu. "Scripts" bleibt bewusst wie gehabt.
-        ImGui::SetNextItemOpen(true);
-
-        if (ImGui::CollapsingHeader("Mod Options")) {
-            if (m_states.empty()) {
-                return;
-            }
-            for (auto& state : m_states) {
-                state->on_draw_ui();
-            }
+        // [MENUE-KATEGORIEN 11.09.2026] Der immer offene Header "Mod Options"
+        // ist weg: die Lua-UIs zeichnen direkt in der Menue-Kategorie
+        // "Developer" (Mods::draw_developer) -- dort ist die Kategorie selbst
+        // die Ueberschrift. "Scripts" steht seit dem 10.09.2026 in
+        // "REFramework Options" (draw_scripts_tree).
+        for (auto& state : m_states) {
+            state->on_draw_ui();
         }
             
     }
@@ -1318,6 +1358,56 @@ void ScriptRunner::spew_error(const std::string& p) {
     m_last_script_error_time = std::chrono::system_clock::now();
 }
 
+
+// ============================================================================
+// [SCRIPTGATE 2026-09-02] siehe Kommentar in ScriptRunner.hpp.
+// Die Map m_loaded_scripts_map ist dieselbe, die die "Known scripts"-Checkboxen
+// bedienen, und sie ist Member des ScriptRunner -- sie ueberlebt reset_scripts()
+// also und wirkt beim naechsten Laden. Damit kann ein Script, das sich selbst
+// aktiviert laesst, alle anderen abschalten und spaeter wieder einschalten.
+// ============================================================================
+void ScriptRunner::set_script_enabled(const std::string& name, bool enabled) {
+    std::scoped_lock _{ m_access_mutex };
+    m_loaded_scripts_map[name] = enabled;
+}
+
+bool ScriptRunner::is_script_enabled(const std::string& name) {
+    std::scoped_lock _{ m_access_mutex };
+    const auto it = m_loaded_scripts_map.find(name);
+
+    // Unbekannt = wird beim naechsten Laden mit true angelegt.
+    return it == m_loaded_scripts_map.end() ? true : it->second;
+}
+
+bool ScriptRunner::any_known_script_disabled() {
+    std::scoped_lock _{ m_access_mutex };
+
+    // Ueber m_known_scripts laufen, nicht ueber die Map: die Liste kennt jede
+    // Datei, die im autorun liegt -- gleiche Quelle wie set_all_scripts_enabled.
+    for (auto&& name : m_known_scripts) {
+        const auto it = m_loaded_scripts_map.find(name);
+
+        if (it != m_loaded_scripts_map.end() && !it->second) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void ScriptRunner::set_all_scripts_enabled(bool enabled) {
+    std::scoped_lock _{ m_access_mutex };
+
+    // Ueber m_known_scripts laufen, nicht ueber die Map: die Liste kennt jede Datei,
+    // die im autorun liegt, auch die gerade abgeschalteten.
+    for (auto&& name : m_known_scripts) {
+        m_loaded_scripts_map[name] = enabled;
+    }
+
+    for (auto&& [name, value] : m_loaded_scripts_map) {
+        value = enabled;
+    }
+}
 
 void ScriptRunner::reset_scripts() {
     auto do_not_hook_d3d = g_framework->acquire_do_not_hook_d3d();

@@ -50,6 +50,12 @@ private:
 #endif
     ModKey::Ptr m_show_cursor_key{ ModKey::create(generate_name("ShowCursorKey")) };
     ModInt32::Ptr m_font_size{ModInt32::create(generate_name("FontSize"), 16)};
+    // [RE4 1.5.9.0 TEXTURLAYOUT 2026-09-09]
+    //  -1 = automatisch nach der Version der re4.exe (Standard)
+    //   0 = Layout bis 1.1.1.0 erzwingen
+    //   1 = Layout ab 1.5.9.0 erzwingen
+    // Erklaerung in shared/sdk/Renderer.hpp bei g_re4_new_texture_layout.
+    ModInt32::Ptr m_re4_texture_layout{ModInt32::create(generate_name("RE4TextureLayout"), -1)};
 
     ValueList m_options {
         *m_menu_key,
@@ -58,5 +64,6 @@ private:
         *m_always_show_cursor,
         *m_show_cursor_key,
         *m_font_size,
+        *m_re4_texture_layout,
     };
 };

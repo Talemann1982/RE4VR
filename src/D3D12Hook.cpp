@@ -602,6 +602,7 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
         d3d12->m_swapchain_hook = std::make_unique<VtableHook>(swap_chain);
         //d3d12->m_swapchain_hook->hook_method(2, (uintptr_t)&D3D12Hook::release);
         d3d12->m_swapchain_hook->hook_method(8, (uintptr_t)&D3D12Hook::present);
+        d3d12->m_swapchain_hook->hook_method(10, (uintptr_t)&D3D12Hook::set_fullscreen_state);
         d3d12->m_swapchain_hook->hook_method(13, (uintptr_t)&D3D12Hook::resize_buffers);
         d3d12->m_swapchain_hook->hook_method(14, (uintptr_t)&D3D12Hook::resize_target);
         d3d12->m_is_phase_1 = false;
@@ -689,6 +690,40 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
 
     d3d12->m_inside_present = false;
     
+    return result;
+}
+
+HRESULT WINAPI D3D12Hook::set_fullscreen_state(IDXGISwapChain3* swap_chain, BOOL Fullscreen, IDXGIOutput* pTarget) {
+    while (g_framework == nullptr) {
+        std::this_thread::yield();
+    }
+
+    std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
+
+    spdlog::info("D3D12 set fullscreen state called");
+    spdlog::info(" Parameters: Fullscreen {}", Fullscreen);
+
+    static bool isWindowed = false;
+
+    if (!Fullscreen)
+        isWindowed = true;
+
+    if (isWindowed)
+        Fullscreen = false;
+
+    auto d3d12 = g_d3d12_hook;
+
+    HWND swapchain_wnd{nullptr};
+    swap_chain->GetHwnd(&swapchain_wnd);
+
+    auto set_fullscreen_state_fn = d3d12->m_swapchain_hook->get_method<decltype(D3D12Hook::set_fullscreen_state)*>(10);
+
+    const auto result = set_fullscreen_state_fn(swap_chain, Fullscreen, pTarget);
+
+    if (result != S_OK) {
+        spdlog::error("Set Fullscreen State failed: {:x}", result);
+    }
+
     return result;
 }
 

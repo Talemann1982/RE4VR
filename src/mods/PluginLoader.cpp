@@ -655,6 +655,27 @@ void PluginLoader::early_init() try {
         auto&& path = entry.path();
 
         if (path.has_extension() && path.extension() == ".dll") {
+            // [.NET SPAETER 15.09.2026] REFramework.NET und sein Ijwhost ziehen
+            // beim Laden die komplette .NET-Runtime in den Prozess. Passiert das
+            // HIER -- "right after executable unpacking", also noch vor allem
+            // anderen --, konkurriert das mit der VR-Initialisierung: gemessen
+            // brauchte xrCreateInstance danach 2,2 s, und VR war sichtbar
+            // spaeter da (Log 16:35:59 Plugins -> 16:36:03 VR -> 16:36:05
+            // OpenXR-System). Ohne das MCP-Plugin war der Start schneller.
+            //
+            // Diese beiden werden deshalb uebersprungen und erst in
+            // initialize_plugins() geladen, also nach dem ersten Frame und
+            // damit nach der VR-Initialisierung. ALLE ANDEREN Plugins
+            // (PDPerfPlugin, PDAFWPlugin) bleiben unveraendert frueh --
+            // ihre Hooks muessen dort sitzen.
+            const auto stem = path.stem().string();
+
+            if (stem == "REFramework.NET" || stem == "Ijwhost") {
+                spdlog::info("[PluginLoader] {} wird erst nach der VR-Init geladen", stem);
+                m_deferred_plugins.push_back(path);
+                continue;
+            }
+
             auto module = LoadLibraryW(path.operator std::wstring().c_str());
 
             if (module == nullptr) {
@@ -673,13 +694,39 @@ void PluginLoader::early_init() try {
     spdlog::error("[PluginLoader] Unknown exception during early init");
 }
 
+// [MCP/.NET 15.09.2026 -- 1:1 aus dem aktuellen Upstream uebernommen]
+// Die Plugin-Initialisierung lief bisher komplett in on_initialize(), also
+// mitten im Mod-Start. REFramework.NET kompiliert dort beim ERSTEN Start die
+// C#-Quellen (Roslyn) -- das dauert Sekunden, und in dieser Zeit versuchte
+// REFramework weiter, D3D zu hooken. Upstream trennt das deshalb:
+//
+//   on_initialize()  -> nur noch die D3D-Zeiger (init_d3d_pointers)
+//   on_frame()       -> initialize_plugins(), genau EINMAL (m_plugins_loaded)
+//                       und mit acquire_do_not_hook_d3d() geschuetzt
+//
+// Die Bremse acquire_do_not_hook_d3d gibt es in diesem Fork laengst
+// (REFramework.hpp, genutzt in Mods.cpp) -- sie wurde beim Plugin-Laden nur
+// nicht verwendet.
 std::optional<std::string> PluginLoader::on_initialize() {
+    init_d3d_pointers();
+
+    return Mod::on_initialize();
+}
+
+void PluginLoader::on_frame() {
+    init_d3d_pointers();
+
+    if (auto error = initialize_plugins(); error.has_value()) {
+        spdlog::error("[PluginLoader] Failed to initialize plugins: {}", error.value());
+    }
+}
+
+void PluginLoader::init_d3d_pointers() {
     std::scoped_lock _{m_mux};
 
-    // Call reframework_plugin_required_version on any dlls that export it.
     g_plugin_initialize_param.reframework_module = g_framework->get_reframework_module();
     reframework::g_renderer_data.renderer_type = (int)g_framework->get_renderer_type();
-    
+
     if (reframework::g_renderer_data.renderer_type == REFRAMEWORK_RENDERER_D3D11) {
         auto& d3d11 = g_framework->get_d3d11_hook();
 
@@ -691,10 +738,42 @@ std::optional<std::string> PluginLoader::on_initialize() {
         reframework::g_renderer_data.device = d3d12->get_device();
         reframework::g_renderer_data.swapchain = d3d12->get_swap_chain();
         reframework::g_renderer_data.command_queue = d3d12->get_command_queue();
-    } else {
-        spdlog::error("[PluginLoader] Unsupported renderer type {}", reframework::g_renderer_data.renderer_type);
-        return "PluginLoader: Unsupported renderer type detected";
     }
+}
+
+std::optional<std::string> PluginLoader::initialize_plugins() {
+    if (m_plugins_loaded) {
+        return std::nullopt;
+    }
+
+    if (reframework::g_renderer_data.renderer_type != REFRAMEWORK_RENDERER_D3D11
+        && reframework::g_renderer_data.renderer_type != REFRAMEWORK_RENDERER_D3D12) {
+        return std::nullopt;   // Renderer noch nicht bereit -- naechster Frame
+    }
+
+    // Plugin init can take a really long time so don't try to re-hook d3d while it's happening.
+    auto do_not_hook_d3d = g_framework->acquire_do_not_hook_d3d();
+
+    std::scoped_lock _{m_mux};
+
+    // [.NET SPAETER 15.09.2026] Jetzt erst die zurueckgestellten .NET-Plugins --
+    // die VR-Initialisierung ist zu diesem Zeitpunkt durch.
+    for (const auto& path : m_deferred_plugins) {
+        auto module = LoadLibraryW(path.operator std::wstring().c_str());
+
+        if (module == nullptr) {
+            spdlog::error("[PluginLoader] Failed to load {}", path.string());
+            m_plugin_load_errors.emplace(path.stem().string(), "Failed to load");
+            continue;
+        }
+
+        spdlog::info("[PluginLoader] Loaded (verzoegert) {}", path.string());
+        m_plugins.emplace(path.stem().string(), module);
+    }
+
+    m_deferred_plugins.clear();
+
+    g_plugin_initialize_param.reframework_module = g_framework->get_reframework_module();
 
     verify_sdk_pointers();
 
@@ -788,8 +867,12 @@ std::optional<std::string> PluginLoader::on_initialize() {
         ++it;
     }
 
+
+    m_plugins_loaded = true;
+
     return std::nullopt;
 }
+
 
 void PluginLoader::on_draw_ui() {
     ImGui::SetNextItemOpen(false, ImGuiCond_Once);

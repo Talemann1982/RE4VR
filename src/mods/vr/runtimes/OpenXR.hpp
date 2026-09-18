@@ -113,6 +113,10 @@ public:
 
     Vector2f get_left_stick_axis() const;
     Vector2f get_right_stick_axis() const;
+    // [TRACKPAD 15.09.2026] Trackpad-Achse AUSDRUECKLICH getrennt vom Stick:
+    // get_*_stick_axis nimmt beim Index den Thumbstick und laesst das Trackpad
+    // liegen. Fuer das Scrollen im eigenen Menue brauchen wir es zusaetzlich.
+    Vector2f get_touchpad_axis(VRRuntime::Hand hand) const;
 
     void trigger_haptic_vibration(float duration, float frequency, float amplitude, VRRuntime::Hand source) const;
     void display_bindings_editor();
@@ -285,6 +289,12 @@ public:
 
         {"/user/hand/*/input/trackpad", "touchpad"}, // vive & others
         {"/user/hand/*/input/trackpad/click", "touchpadclick"}, // vive & others
+        // [TRACKPAD-PRESS 15.09.2026] Der Valve Index kennt unter OpenXR KEINEN
+        // trackpad/click -- er liefert eine KRAFT (force) und ein touch. Der
+        // Klick kam deshalb nur unter OpenVR an, wo SteamVR ihn selbst aus der
+        // Kraft bildet. Hier also zusaetzlich die Kraft anfordern; der Riegel
+        // im Binding nimmt sie mit einer Schwelle als "gedrueckt".
+        {"/user/hand/*/input/trackpad/force", "touchpadforce"}, // index only
         {"/user/hand/*/output/haptic", "haptic"}, // most of them
 
         {"/user/hand/right/input/a/click", "re3_dodge"},

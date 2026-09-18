@@ -39,11 +39,60 @@ struct Rect {
 
 class TargetState;
 
+// ============================================================================
+// [RE4 1.5.9.0 -- TEXTURLAYOUT 2026-09-09]
+// ============================================================================
+// RE4 hat mit dem Update 1.5.9.0 (Exe meldet FileVersion 1.5.9.0) das
+// Speicherlayout seiner Texturobjekte auf das von SF6 umgestellt:
+//   * die Beschreibung sitzt +0x18 hinter der RenderResource statt +sizeof(void*)
+//   * der D3D12-Resource-Zeiger liegt auf 0xB8 statt 0xA0
+// Beides wird beim Aufbau der VR-Augentexturen gelesen -- mit dem falschen
+// Layout stuerzt der Fork deshalb schon BEIM START ab, nicht erst im Spiel.
+// (Upstream-Gegenstueck: "SDK (RE4): Fix VR multipass crash on 1.5.9.0",
+// praydog/REFramework PR #1822.)
+//
+// Umgeschaltet wird ueber die Konfiguration, BEWUSST NICHT automatisch:
+//   REFrameworkConfig_RE4TextureLayout=0   Exe bis 1.1.1.0   (Standard)
+//   REFrameworkConfig_RE4TextureLayout=1   Exe ab 1.5.9.0
+// Gesetzt wird das Flag in REFrameworkConfig::on_config_load.
+//
+// Upstream loest dasselbe ueber sdk::GameIdentity::get().is_re4() und
+// RenderResource::get_runtime_size(). Das gehoert zum V2-Umbau ("eine DLL fuer
+// alle RE-Engine-Spiele") -- wir bauen pro Spiel, fuer uns ist
+// sizeof(RenderResource) korrekt und der Rest waere unnoetiger Ballast.
+inline bool g_re4_new_texture_layout = false;
+
+// [RE4 1.5.9.0 -- GEWACHSENE BASISKLASSE 2026-09-09]
+// 1.5.9.0 hat der RenderResource acht Bytes Polsterung verpasst: sie ist von
+// 0x10 auf 0x18 gewachsen (upstream schreibt dafuer `defined(RE4)` in die
+// _tdb73_padding-Bedingung, Kommentar dort woertlich "idk why new re4 has
+// this"). Das ist der eigentliche Grund, warum die zwei Textur-Offsets allein
+// nicht reichten -- `sizeof(RenderResource)` ist die Rechengrundlage fuer die
+// Lage praktisch aller Nachfolge-Member, und acht Bytes daneben heisst unter
+// anderem: die RenderTargetViews kommen als null zurueck.
+//
+// EINE KOMPILIERTE STRUKTUR KANN NICHT ZWEI GROESSEN HABEN. Deshalb bleibt
+// RenderResource unveraendert auf dem Stand der alten Exe, und jede Stelle, die
+// sonst `sizeof(RenderResource)` oder ein echtes Member benutzt, rechnet die
+// Lage hier zur Laufzeit aus. Genau diesen Weg geht auch upstream
+// (RenderResource::get_runtime_size()), nur ueber GameIdentity statt ueber
+// unseren Schalter.
+//
+// WICHTIG: bei ausgeschaltetem Schalter liefert das Byte fuer Byte dieselben
+// Werte wie vorher -- die alte Exe kann sich dadurch nicht aendern.
+inline uintptr_t render_resource_size() {
+#ifdef RE4
+    return sizeof(RenderResource) + (g_re4_new_texture_layout ? sizeof(void*) : 0);
+#else
+    return sizeof(RenderResource);
+#endif
+}
+
 template<typename T>
 class DirectXResource : public RenderResource {
 public:
     T* get_native_resource() const {
-        return *(T**)((uintptr_t)this + sizeof(RenderResource));
+        return *(T**)((uintptr_t)this + render_resource_size());
     }
 
 private:
@@ -82,40 +131,51 @@ public:
     }
 
     Desc* get_desc() {
-        return (Desc*)((uintptr_t)this + s_desc_offset);
+        return (Desc*)((uintptr_t)this + desc_offset());
     }
 
     DirectXResource<ID3D12Resource>* get_d3d12_resource_container() {
-        return *(DirectXResource<ID3D12Resource>**)((uintptr_t)this + s_d3d12_resource_offset);
+        return *(DirectXResource<ID3D12Resource>**)((uintptr_t)this + d3d12_resource_offset());
     }
 
 private:
-#if TDB_VER >= 73 || defined(SF6)
-    static constexpr inline auto s_desc_offset = sizeof(RenderResource) + 0x18;
+    // [RE4 1.5.9.0] Fuer RE4 zur LAUFZEIT umgeschaltet -- alle anderen Spiele
+    // behalten ihre Compile-Zeit-Werte unveraendert. Siehe die Erklaerung bei
+    // g_re4_new_texture_layout weiter oben.
+    static uintptr_t desc_offset() {
+#ifdef RE4
+        return render_resource_size() + (g_re4_new_texture_layout ? 0x18 : sizeof(void*));
+#elif TDB_VER >= 73 || defined(SF6)
+        return sizeof(RenderResource) + 0x18;
 #else
-    static constexpr inline auto s_desc_offset = sizeof(RenderResource) + sizeof(void*);
+        return sizeof(RenderResource) + sizeof(void*);
 #endif
+    }
 
-#if TDB_VER >= 73
-    static constexpr inline auto s_d3d12_resource_offset = 0xE0;
+    static uintptr_t d3d12_resource_offset() {
+#ifdef RE4
+        return g_re4_new_texture_layout ? 0xB8 : 0xA0;
+#elif TDB_VER >= 73
+        return 0xE0;
 #elif TDB_VER >= 71
 #ifdef SF6
-    // So because this discrepancy in SF6 is > 8 bytes (which is how much was added to RenderResource), trying to automate this
-    // is a bit trickier so we can look into this later, and just hardcode it for now.
-    static constexpr inline auto s_d3d12_resource_offset = 0xB8;
+        // So because this discrepancy in SF6 is > 8 bytes (which is how much was added to RenderResource), trying to automate this
+        // is a bit trickier so we can look into this later, and just hardcode it for now.
+        return 0xB8;
 #elif defined(MHRISE)
-    static constexpr inline auto s_d3d12_resource_offset = 0x98; // WHAT THE HECK!!!
+        return 0x98; // WHAT THE HECK!!!
 #else
-    static constexpr inline auto s_d3d12_resource_offset = 0xA0;
+        return 0xA0;
 #endif
 #elif TDB_VER == 70
-    static constexpr inline auto s_d3d12_resource_offset = 0x98;
+        return 0x98;
 #elif TDB_VER == 69
-    static constexpr inline auto s_d3d12_resource_offset = 0x98;
+        return 0x98;
 #else
-    // TODO? might not be right offset (verified in DMC5)
-    static constexpr inline auto s_d3d12_resource_offset = 0x98;
+        // TODO? might not be right offset (verified in DMC5)
+        return 0x98;
 #endif
+    }
 };
 
 class DepthStencilView : public RenderResource {
@@ -133,8 +193,11 @@ public:
     sdk::intrusive_ptr<RenderTargetView> clone();
     sdk::intrusive_ptr<RenderTargetView> clone(uint32_t new_width, uint32_t new_height);
 
+    // [RE4 1.5.9.0] Lage zur Laufzeit statt ueber das Member -- s.
+    // render_resource_size(). m_desc bleibt stehen, damit sizeof und die
+    // static_asserts unten den alten Aufbau weiter absichern.
     Desc& get_desc() {
-        return m_desc;
+        return *(Desc*)((uintptr_t)this + render_resource_size());
     }
 
     sdk::intrusive_ptr<Texture>& get_texture_d3d12() const;
@@ -154,32 +217,38 @@ public:
     sdk::intrusive_ptr<TargetState> clone() const;
     sdk::intrusive_ptr<TargetState> clone(const std::vector<std::array<uint32_t, 2>>& new_dimensions) const;
 
+    // [RE4 1.5.9.0] wie bei RenderTargetView: Lage zur Laufzeit rechnen,
+    // m_desc bleibt als Beleg des alten Aufbaus stehen.
     Desc& get_desc() {
-        return m_desc;
+        return *(Desc*)((uintptr_t)this + render_resource_size());
     }
 
     const Desc& get_desc() const {
-        return m_desc;
+        return *(const Desc*)((uintptr_t)this + render_resource_size());
     }
 
     uint32_t get_rtv_count() const {
-        return m_desc.num_rtv;
+        return get_desc().num_rtv;
     }
 
     sdk::intrusive_ptr<RenderTargetView> get_rtv(int32_t index) const {
-        if (index < 0 || index >= get_rtv_count() || m_desc.rtvs == nullptr) {
+        const auto& d = get_desc();
+
+        if (index < 0 || index >= get_rtv_count() || d.rtvs == nullptr) {
             return nullptr;
         }
-        
-        return m_desc.rtvs[index];
+
+        return d.rtvs[index];
     }
 
     void set_rtv(int32_t index, RenderTargetView* rtv) {
-        if (index < 0 || index >= get_rtv_count() || m_desc.rtvs == nullptr) {
+        auto& d = get_desc();
+
+        if (index < 0 || index >= get_rtv_count() || d.rtvs == nullptr) {
             return;
         }
 
-        m_desc.rtvs[index] = rtv;
+        d.rtvs[index] = rtv;
     }
 
 public:

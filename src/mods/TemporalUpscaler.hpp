@@ -1,9 +1,13 @@
 #pragma once
 
+
+
+#include <algorithm>
 #include <array>
 #include <utility/FunctionHook.hpp>
 #include <sdk/intrusive_ptr.hpp>
 
+#include "vr/d3d12/SharpenPass.hpp"
 #include "vr/d3d12/CommandContext.hpp"
 #include "vr/d3d12/TextureContext.hpp"
 #include "Mod.hpp"
@@ -31,9 +35,12 @@ public:
     std::array<uint32_t, 2> hudlessTargetSize{};
     std::array<uint32_t, 2> finalColorTargetSize{};
     D3D12RendererAPI* d3d12Renderer = nullptr;
-    TextureDesc extractedUIBufferDesc;
+    TextureDesc extractedUIBufferDesc[2];
 
     bool is_enabled_ui_fix() { return m_enable_ui_fix->value(); };
+    // [UI RENDER FIX 16.09.2026] Schalter "UI Render Fix" neben "AFW (beta)"
+    // (VR::draw_rendering_technique_ui).
+    void set_enabled_ui_fix(bool v) { m_enable_ui_fix->value() = v; };
 
 public:
     static std::shared_ptr<TemporalUpscaler>& get();
@@ -52,7 +59,9 @@ public:
     void apply_upscale_type_from_config();
 
     void on_draw_ui() override;
+    void draw_settings(); // Inhalt ohne Header, fuer die Menue-Kategorie "Upscaler"
     void on_early_present() override; // early because it needs to run before VR.
+
     void on_post_present() override;
     void on_device_reset() override;
 
@@ -156,9 +165,9 @@ private:
         case UpscaleQuality::QUALITY:
             return PDPerfQualityLevel::Quality;
         case UpscaleQuality::DLAA: // renders at native res, the level itself doesn't matter
-            return PDPerfQualityLevel::Quality;
+            return PDPerfQualityLevel::Native;
         default:
-            return PDPerfQualityLevel::Balanced;
+            return PDPerfQualityLevel::Quality;
         }
     }
     void update_motion_scale();
@@ -209,6 +218,10 @@ private:
 
     uint32_t m_available_upscale_type{0};
     PDUpscaleType m_upscale_type{PDUpscaleType::FSR3};
+
+    // [CAS 15.09.2026] Eigener Schaerfe-Pass hinter dem Upscaler. Er schreibt
+    // IN die upscaled Texturen zurueck -- nur die sieht das HMD.
+    d3d12::SharpenPass m_sharpen{};
 
     uint32_t m_backbuffer_inconsistency_start{};
     std::array<uint32_t, 2> m_backbuffer_size{};
@@ -282,12 +295,26 @@ private:
         ModToggle::create(generate_name("SharpnessEnable"), true)
     };
 
-    const ModSlider::Ptr m_sharpness_amount{
-        ModSlider::create(generate_name("SharpnessAmount_V2"), 0.0f, 5.0f, 1.0f)
+    // [SKALA 1-10 / CAP 1.0 -- 15.09.2026, Ansage des Users] Der Regler geht in
+    // GANZEN Schritten 0,1,2 ... 10; an den Upscaler geht der Zehntelwert, 10
+    // im Menue ist also 1.0 und damit die Obergrenze. Der alte Bereich ging bis
+    // 5.0 -- Artefakte lagen dort lange vor dem Anschlag.
+    const ModInt32::Ptr m_sharpness_amount{
+        ModInt32::create(generate_name("SharpnessAmount_V4"), 5)
     };
 
-    // Bleibt (kein UI mehr dafuer): der AFW-Framewarp fragt is_enabled_ui_fix() ab.
-    const ModToggle::Ptr m_enable_ui_fix{ModToggle::create(generate_name("EnableUIFix"), true)};
+    // Der Wert, der wirklich hinausgeht: 0.0 .. 1.0
+    float sharpness_value() const {
+        const int32_t v = std::clamp(m_sharpness_amount->value(), 0, 10);
+
+        return (float)v * 0.1f;
+    }
+
+    // Der AFW-Framewarp fragt is_enabled_ui_fix() ab.
+    // [UI RENDER FIX 16.09.2026 -- Ansage des Users] Wieder mit UI: Schalter
+    // "UI Render Fix" neben "AFW (beta)". Default AUS (war true). Eine schon
+    // gespeicherte Config (TemporalUpscaler_EnableUIFix) behaelt ihren Wert.
+    const ModToggle::Ptr m_enable_ui_fix{ModToggle::create(generate_name("EnableUIFix"), false)};
 
     // [UPSCALE_TYPE_PERSISTENT 2026-08-19] Gespeichert wird der PDUpscaleType (0=DLSS, 1=FSR2,
     // 2=XESS, 3=FSR3, 4=FSR4), NICHT der Index in der Combo-Liste: welche Methoden verfuegbar
@@ -305,7 +332,12 @@ private:
             "Balanced",
             "Quality",
             "DLAA"
-        }, (int32_t)UpscaleQuality::DLAA)
+        // [STANDARD 2026-09-09] War DLAA -- das rendert in nativer Aufloesung,
+        // der Upscaler bringt dann gar nichts. Wer ihn einschaltet, will
+        // Leistung; BALANCED ist auch das, was FSR beim ersten Start liefert.
+        // Gilt nur fuer NEUE Installationen -- eine vorhandene Konfiguration
+        // sticht den Standard.
+        }, (int32_t)UpscaleQuality::BALANCED)
     };
 
     // Bleibt (kein UI mehr dafuer): get_dlss_preset() reicht den Wert an den Upscaler durch.

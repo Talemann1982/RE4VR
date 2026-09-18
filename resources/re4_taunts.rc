@@ -1,0 +1,101 @@
+// Automatisch erzeugt -- eingebettete Taunt-WAVs (Tiergriff + Mittelfinger-Geste).
+// Typ WAVE ist Pflicht: PlaySound mit SND_RESOURCE akzeptiert nur den.
+
+TAUNT01 WAVE "sounds/taunt01_aintpsvr.wav"
+TAUNT02 WAVE "sounds/taunt02_cocksucker.wav"
+TAUNT03 WAVE "sounds/taunt03_cute.wav"
+TAUNT04 WAVE "sounds/taunt04_delicious.wav"
+TAUNT05 WAVE "sounds/taunt05_dlss5.wav"
+TAUNT06 WAVE "sounds/taunt06_gotyou.wav"
+TAUNT07 WAVE "sounds/taunt07_imgoing.wav"
+TAUNT08 WAVE "sounds/taunt08_likeashley.wav"
+TAUNT09 WAVE "sounds/taunt09_mothernature.wav"
+TAUNT10 WAVE "sounds/taunt10_smellass.wav"
+TAUNT11 WAVE "sounds/taunt11_stupidshit.wav"
+TAUNT12 WAVE "sounds/taunt12_twisthead.wav"
+TAUNT13 WAVE "sounds/taunt13_uglyface.wav"
+TAUNT14 WAVE "sounds/taunt14_what.wav"
+TAUNT15 WAVE "sounds/taunt15_youface.wav"
+
+// [SEPARIERT 13.09.2026] Ab hier NUR Gesten, nie der Tiergriff -- der zieht
+// weiter ausschliesslich aus TAUNT01..15 (re4vr::TAUNT_WAV_CHOKE_COUNT).
+// TAUNT16..20: Mittelfinger (LT + rechtes B)
+TAUNT16 WAVE "sounds/taunt16_nice.wav"
+TAUNT17 WAVE "sounds/taunt17_this.wav"
+TAUNT18 WAVE "sounds/taunt18_thiser.wav"
+TAUNT19 WAVE "sounds/taunt19_aface.wav"
+TAUNT20 WAVE "sounds/taunt20_youwill.wav"
+// TAUNT21..27: Zeigefinger (LT + rechtes A)
+TAUNT21 WAVE "sounds/taunt21_listen.wav"
+TAUNT22 WAVE "sounds/taunt22_thereyou.wav"
+TAUNT23 WAVE "sounds/taunt23_thisclits.wav"
+TAUNT24 WAVE "sounds/taunt24_wakeup.wav"
+TAUNT25 WAVE "sounds/taunt25_gowi.wav"
+TAUNT26 WAVE "sounds/taunt26_itis.wav"
+TAUNT27 WAVE "sounds/taunt27_nonono.wav"
+// [ADA 17.09.2026] Adas eigene Sprueche im DLC. Gegated ueber ihren Body-Pool
+// (ADA_BODY in TAUNT_TABLE, RE4VRGuestures.cpp) -- Leon kommt nie daran.
+// TAUNT28..34: Mittelfinger (LT + rechtes B)
+TAUNT28 WAVE "sounds/taunt28_adabingo.wav"
+TAUNT29 WAVE "sounds/taunt29_adaasses.wav"
+TAUNT30 WAVE "sounds/taunt30_adatight.wav"
+TAUNT31 WAVE "sounds/taunt31_adajuggz.wav"
+TAUNT32 WAVE "sounds/taunt32_adastupid.wav"
+TAUNT33 WAVE "sounds/taunt33_adamen.wav"
+TAUNT34 WAVE "sounds/taunt34_adaloveit.wav"
+// TAUNT35..41: Zeigefinger (LT + rechtes A)
+TAUNT35 WAVE "sounds/taunt35_adaboy.wav"
+TAUNT36 WAVE "sounds/taunt36_adaskirt.wav"
+TAUNT37 WAVE "sounds/taunt37_adablabla.wav"
+TAUNT38 WAVE "sounds/taunt38_adanipples.wav"
+TAUNT39 WAVE "sounds/taunt39_adaleon.wav"
+TAUNT40 WAVE "sounds/taunt40_adaamber.wav"
+TAUNT41 WAVE "sounds/taunt41_adaboobs.wav"
+
+// [ACHIEVEMENT 13.09.2026] Kein Taunt -- der Jingle zur Achievement-Tafel beim
+// ERSTEN Fledermaus-Choke. Steht bewusst NICHT in TAUNT_WAV_NAMES, damit ihn
+// weder der Tiergriff-Beutel noch eine Geste aus TAUNT_TABLE ziehen kann.
+ACHIEVE01 WAVE "sounds/achievement01.wav"
+
+// [ASHLEY 13.09.2026] Ihre eigenen Sprueche beim Choke. Eigener Namensraum,
+// damit weder der Tiergriff-Beutel noch eine Geste sie ziehen kann.
+ASHLEY01 WAVE "sounds/ashley01_howyoulike.wav"
+ASHLEY02 WAVE "sounds/ashley02_ipayyou.wav"
+ASHLEY03 WAVE "sounds/ashley03_notsmart.wav"
+ASHLEY04 WAVE "sounds/ashley04_iwishbones.wav"
+ASHLEY05 WAVE "sounds/ashley05_isthatall.wav"
+ASHLEY06 WAVE "sounds/ashley06_thatsloser.wav"
+ASHLEY07 WAVE "sounds/ashley07_youpervert.wav"
+ASHLEY08 WAVE "sounds/ashley08_yourwell.wav"
+// [16.09.2026] Neunter Griff-Spruch.
+ASHLEY09 WAVE "sounds/ashley09_dontstickknife.wav"
+// [17.09.2026] Zehnter und elfter Griff-Spruch.
+ASHLEY10 WAVE "sounds/ashley10_modelscout.wav"
+ASHLEY11 WAVE "sounds/ashley11_nobra.wav"
+
+
+// [ASHLEY ANTWORTET 16.09.2026] Ihre Antwort auf eine Geste, die IHR galt.
+// Zwei getrennte Poels -- auf den Zeigefinger sagt sie etwas anderes als auf den
+// Stinkefinger. Hier eintragen, dann ASHLEY_POINT_WAV_COUNT bzw.
+// ASHLEY_FUCK_WAV_COUNT in RE4VR.hpp hochzaehlen.
+// Format wie ueberall: mono, 48 kHz, 16 Bit PCM.
+//
+ASHLEYPOINT01 WAVE "sounds/ashleypoint01_suchanidiot.wav"
+ASHLEYPOINT02 WAVE "sounds/ashleypoint02_fingerstinks.wav"
+ASHLEYPOINT03 WAVE "sounds/ashleypoint03_makingmedizzy.wav"
+ASHLEYPOINT04 WAVE "sounds/ashleypoint04_makesmehorny.wav"
+ASHLEYPOINT05 WAVE "sounds/ashleypoint05_pantiesslipped.wav"
+// [17.09.2026]
+ASHLEYPOINT06 WAVE "sounds/ashleypoint06_sixganados.wav"
+ASHLEYPOINT07 WAVE "sounds/ashleypoint07_magazincover.wav"
+ASHLEYPOINT08 WAVE "sounds/ashleypoint08_leavemehere.wav"
+
+ASHLEYFUCK01 WAVE "sounds/ashleyfuck01_fuckyoutoo.wav"
+ASHLEYFUCK02 WAVE "sounds/ashleyfuck02_biggestidiot.wav"
+ASHLEYFUCK03 WAVE "sounds/ashleyfuck03_nocockbigmouth.wav"
+ASHLEYFUCK04 WAVE "sounds/ashleyfuck04_stillavirgin.wav"
+ASHLEYFUCK05 WAVE "sounds/ashleyfuck05_uglysincebirth.wav"
+ASHLEYFUCK06 WAVE "sounds/ashleyfuck06_dontwanttogohome.wav"
+// [17.09.2026]
+ASHLEYFUCK07 WAVE "sounds/ashleyfuck07_justfarted.wav"
+ASHLEYFUCK08 WAVE "sounds/ashleyfuck08_smellyour.wav"

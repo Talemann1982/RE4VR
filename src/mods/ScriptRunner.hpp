@@ -342,6 +342,14 @@ public:
     }
     void on_frame() override;
     void on_draw_ui() override;
+
+    // [REF OPTIONS 10.09.2026] Der "Scripts"-Baum wird NICHT mehr von
+    // on_draw_ui gezeichnet, sondern von Mods::draw_ref_trees() im Tree
+    // "REF Options". on_draw_ui zeichnet nur noch "Mod Options" -- der bleibt
+    // an seiner alten Stelle, dort liegen die Regler der Mod-Scripte.
+    // framed = true: CollapsingHeader mit Rahmen wie die Nachbarn unter
+    // "REFramework Options"; false: TreeNode wie in "Developer".
+    void draw_scripts_tree(bool framed = false);
     void on_update_transform(RETransform* transform) override;
     void on_pre_application_entry(void* entry, const char* name, size_t hash) override;
     void on_application_entry(void* entry, const char* name, size_t hash) override;
@@ -394,6 +402,42 @@ public:
         m_has_any_transform_updates = true;
     }
 
+    // ========================================================================
+    // [SCRIPTGATE 2026-09-02] Scripte WIRKLICH ausschalten, nicht nur stillstellen.
+    //
+    // Warum das noetig ist: ein Lua-Killswitch stoppt nur, was ein Callback in
+    // Zukunft tut. Der Datei-Rumpf ist beim Laden aber schon einmal gelaufen und
+    // sdk.hook hat Trampoline physisch in die Engine-Funktionen gesetzt -- beides
+    // bleibt stehen. "Datei aus dem autorun nehmen" wirkt deshalb anders als
+    // "Script stillgestellt", und nur das erste ist ein echtes Aus.
+    //
+    // Diese drei Funktionen machen genau das aus Lua heraus verfuegbar:
+    //   set_script_enabled(name, bool)  -- dieselbe Map wie die "Known scripts"-Haken
+    //   is_script_enabled(name)         -- ueberlebt den Reset, taugt als Zustandsspeicher
+    //   request_reset_scripts()         -- laedt neu, aber VERZOEGERT im naechsten
+    //                                      on_frame: ein direktes reset_scripts() aus
+    //                                      einem Lua-Callback wuerde den State
+    //                                      zerstoeren, aus dem der Aufruf gerade kommt.
+    // ========================================================================
+    void request_reset_scripts() { m_needs_reset_request = true; }
+    void set_script_enabled(const std::string& name, bool enabled);
+    bool is_script_enabled(const std::string& name);
+    void set_all_scripts_enabled(bool enabled);
+
+    // [ZUSTANDSPROBE 04.09.2026] "Steht die Ein/Aus-Liste noch auf AUS?"
+    //
+    // RE4VRObjects hat das frueher ueber eine STELLVERTRETER-DATEI gefragt
+    // (is_script_enabled("re4_vr_motion.lua")). Das bricht, sobald genau diese
+    // Datei nach autorun\c++\ wandert: is_script_enabled liefert fuer
+    // Unbekanntes true, der Riegel haelt sich fuer "an" und schaltet in der Zone
+    // alle 3 s erneut ab -- Endlos-Reset -- waehrend der Rueckweg auf fremder
+    // Stage nie mehr feuert.
+    //
+    // Die Frage ist eine Eigenschaft der MAP, nicht einer einzelnen Datei.
+    // Diese Abfrage liest exakt die Struktur, die set_all_scripts_enabled
+    // schreibt, und ueberlebt damit jeden weiteren Port.
+    bool any_known_script_disabled();
+
 private:
     ScriptState::GarbageCollectionData make_gc_data() const {
         ScriptState::GarbageCollectionData data{};
@@ -428,6 +472,7 @@ private:
     bool m_has_any_transform_updates{false};
     bool m_console_spawned{false};
     bool m_needs_first_reset{true};
+    bool m_needs_reset_request{false};   // [SCRIPTGATE] von request_reset_scripts() gesetzt
     bool m_last_online_match_state{false};
     bool m_attempted_hook_battle_rule{false};
     std::optional<uint8_t> m_last_battle_type{};
