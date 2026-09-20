@@ -594,6 +594,14 @@ private:
     Handle m_ts_ctrl{};
     bool m_ts_skip_ok{false};
 
+    // [THROWSIGHT SAVE-LOAD 19.09.2026] Absturz im Dump re4.exe.20440.dmp:
+    // nach Tod/Laden rief throwsight_force_off requestDeactivate auf den
+    // Controller von VOR dem Laden (obj_ok laesst ihn durch, sein Inneres ist
+    // abgebaut) -> AV im Spielcode. Springt die Body-Adresse, wird der
+    // gemerkte Controller verworfen (derselbe Ausloeser wie beim Reload-Reset).
+    std::optional<uintptr_t> m_ts_body_addr{};
+    void ts_saveload_tick();
+
 public:
     // [GRANATENFLUG] Von den GrenadeShell-Hooks gerufen (freie Lambdas kommen
     // an private Member nicht heran).

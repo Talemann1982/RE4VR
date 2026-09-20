@@ -2940,10 +2940,22 @@ float ada_wav_extra_db() {
 // dem uebergebenen Pegel statt mit dem globalen Regler. Gebraucht fuer Ashleys
 // Chat-Sprueche, deren Lautstaerke an IHREM ABSTAND haengt -- der allgemeine
 // dB-Regler soll davon unberuehrt bleiben.
+// [WAV-SERIE 20.09.2026] Jeder gestartete eigene Ton zaehlt eine Nummer hoch.
+// Wer eine Mundbewegung an einen Ton haengt, merkt sich die Nummer und stoppt,
+// sobald ein anderer Ton dazwischenfunkt -- sonst redet der Mund weiter,
+// waehrend der Ton laengst abgeschnitten ist (SND_PURGE).
+uint64_t g_wav_serial = 0;
+
+uint64_t wav_serial() {
+    return g_wav_serial;
+}
+
 static bool play_wav_resource(const char* res_name, const float* db_override = nullptr) {
     if (res_name == nullptr) {
         return false;
     }
+
+    ++g_wav_serial;
 
     const float gain_db = db_override != nullptr ? *db_override : g_taunt_gain_db;
 
@@ -2959,6 +2971,12 @@ static bool play_wav_resource(const char* res_name, const float* db_override = n
     // wuerde den ganzen Spielton mitregeln. Also die Samples selbst skalieren
     // und per SND_MEMORY aus dem Speicher spielen statt per SND_RESOURCE.
     //
+    // [IMMER ZUERST STOPPEN 20.09.2026 -- Ansage] Jeder neue eigene Ton
+    // schneidet den laufenden ab, egal von welchem Modul er kommt. Vorher tat
+    // das nur der skalierte Weg (SND_MEMORY); der Resource-Weg bei 0 dB lief
+    // daneben weiter, dadurch klangen zwei WAVs gleichzeitig.
+    PlaySoundA(nullptr, nullptr, SND_PURGE);
+
     // Bei 0 dB wird nichts gerechnet -- dann direkt aus der Resource.
     if (std::abs(gain_db) < 0.01f) {
         return PlaySoundA(res_name, module_handle,
@@ -2985,10 +3003,8 @@ static bool play_wav_resource(const char* res_name, const float* db_override = n
     // PlaySound zurueckgekehrt ist.
     static std::vector<uint8_t> buf;
 
-    // Den laufenden Ton ZUERST stoppen, sonst liest er aus dem Puffer, den wir
-    // gerade neu befuellen -- das knackt.
-    PlaySoundA(nullptr, nullptr, SND_PURGE);
-
+    // (Gestoppt wurde oben schon -- der Puffer darf erst danach neu befuellt
+    // werden, sonst liest der laufende Ton aus ihm und es knackt.)
     buf.assign(src, src + size);
 
     // RIFF-Chunks durchlaufen und nur den data-Block skalieren. Header
@@ -3025,6 +3041,21 @@ static bool play_wav_resource(const char* res_name, const float* db_override = n
                       SND_MEMORY | SND_ASYNC | SND_NODEFAULT) != FALSE;
 }
 
+// [JIGGLE 19.09.2026] Klatscher ASHLEYSLAP01..03 -- mit eigenem Pegel (db =
+// globaler Regler + Slap-Zuschlag, gerechnet in RE4VRJiggle).
+bool play_slap_wav(int index, float db) {
+    if (index < 0 || index >= SLAP_WAV_COUNT) {
+        return false;
+    }
+
+    char name[16]{};
+    std::snprintf(name, sizeof(name), "ASHLEYSLAP%02d", index + 1);
+
+    const float gain = std::clamp(db, -40.0f, 12.0f);
+
+    return play_wav_resource(name, &gain);
+}
+
 bool play_taunt_wav(int index) {
     if (index < 0 || index >= TAUNT_WAV_COUNT) {
         return false;
@@ -3041,13 +3072,6 @@ bool play_taunt_wav_db(int index, float db) {
     const float gain = std::clamp(db, -40.0f, 12.0f);
 
     return play_wav_resource(TAUNT_WAV_NAMES[index], &gain);
-}
-
-// [ACHIEVEMENT 13.09.2026] Der Jingle zur Tafel. Eigener Resource-Name statt
-// eines Taunt-Index -- so kann ihn weder der Tiergriff-Beutel noch eine Geste
-// zufaellig ziehen; die Lautstaerke ist trotzdem derselbe dB-Regler.
-bool play_achievement_wav() {
-    return play_wav_resource("ACHIEVE01");
 }
 
 // [HUELLKURVE ZUR LAUFZEIT 16.09.2026 -- Ansage des Users: "ich adde morgen

@@ -7356,6 +7356,7 @@ void RE4VRReload5::on_frame() {
     // Fuer die Hooks gespiegelt: sie duerfen pro Aufruf nicht in den Lua-State
     // greifen (isEnableFire und SoundContainer.trigger feuern sehr oft).
     tick_merc_round();
+    tick_saveload_reset();
 
     rifle_on_frame();
     bolt_on_frame();
@@ -7373,6 +7374,35 @@ void RE4VRReload5::on_frame() {
 // ansprechbar (Schreiben verpufft lautlos).
 // TRIGGER: __re4_merc_round -- merc zaehlt es in der Ladeluecke hoch, in der der
 // Body kurz gar nichts meldet. Ausserhalb Mercenaries aendert sich der Token nie.
+// [SAVE_LOAD-RESET 19.09.2026] Sonde re4_saveload_sonde: die Body-Adresse
+// springt NUR bei Save-Load/Tod (0,77 s ohne Body davor), nie im Spiel. Die
+// alte Waffe bleibt danach oft noch lesbar -> der tf-Test im Refresh sah keinen
+// Grund zum Neuholen. tf wegwerfen zwingt den vorhandenen [SAVE_LOAD]-Zweig.
+void RE4VRReload5::tick_saveload_reset() {
+    auto* body = re4vr::fc::body_go();
+
+    if (body == nullptr) {
+        return;
+    }
+
+    const auto a = reinterpret_cast<uintptr_t>(body);
+
+    if (!m_sl_body.has_value()) {
+        m_sl_body = a;
+
+        return;
+    }
+
+    if (a == *m_sl_body) {
+        return;
+    }
+
+    m_sl_body = a;
+    m_pe_cache = nullptr;
+    m_rifwep.tf = nullptr;
+    m_bwep.tf = nullptr;
+}
+
 void RE4VRReload5::tick_merc_round() {
     const auto t = re4vr::lua_get_number_opt("__re4_merc_round");
     const auto v = t.has_value() ? std::optional<int32_t>{static_cast<int32_t>(*t)}

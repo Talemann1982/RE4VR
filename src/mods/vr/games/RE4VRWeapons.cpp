@@ -4909,7 +4909,7 @@ bool knife_read_ray(::REManagedObject* res, float& d_out, float& ny_out,
     }
 
     struct alignas(16) ContactPointBuf {
-        uint8_t b[80];
+        uint8_t b[re4vr::contact_point::SIZE];
     };
 
     auto context = sdk::get_thread_context();
@@ -4929,9 +4929,12 @@ bool knife_read_ray(::REManagedObject* res, float& d_out, float& ny_out,
         return false;
     }
 
-    // Feld-Offsets aus der TDB: Position 0x10, Normal 0x20, Distance 0x34.
-    d_out = *reinterpret_cast<const float*>(cpb.b + 0x34);
-    ny_out = *reinterpret_cast<const float*>(cpb.b + 0x20 + sizeof(float));
+    // Feld-Offsets zentral in RE4VR.hpp (re4vr::contact_point) -- vorher
+    // standen hier die base-Werte der TDB (0x34 / 0x20+4). 0x34 ist in
+    // Wahrheit mUserDataPtr; dadurch kam nie eine Trefferdistanz an.
+    d_out = *reinterpret_cast<const float*>(cpb.b + re4vr::contact_point::DISTANCE);
+    ny_out = *reinterpret_cast<const float*>(cpb.b + re4vr::contact_point::NORMAL
+                                             + sizeof(float));
 
     if (auto* col = re4vr::call_safe<::REManagedObject*>(res, "getContactCollidable", 0)) {
         go_out = re4vr::call_safe<::REManagedObject*>(col, "get_GameObject");
@@ -7242,6 +7245,23 @@ bool RE4VRWeapons::ts_suppress_now() {
         && re4vr::lua_get_tribool("__re4_boat_active") != 1;
 }
 
+// [THROWSIGHT SAVE-LOAD 19.09.2026] s. RE4VRWeapons.hpp
+void RE4VRWeapons::ts_saveload_tick() {
+    auto* body = re4vr::fc::body_go();
+
+    if (body == nullptr) {
+        return;
+    }
+
+    const auto a = reinterpret_cast<uintptr_t>(body);
+
+    if (m_ts_body_addr.has_value() && *m_ts_body_addr != a) {
+        drop(m_ts_ctrl);
+    }
+
+    m_ts_body_addr = a;
+}
+
 // Netz 2: aktiv herunterfahren, solange die Granate in der Hand ist. Holt auch
 // die Linie herunter, die schon lief, bevor die Granate gezogen wurde.
 void RE4VRWeapons::throwsight_force_off() {
@@ -7868,6 +7888,10 @@ void RE4VRWeapons::on_frame() {
     if (!ensure_init()) {
         return;
     }
+
+    // [THROWSIGHT SAVE-LOAD 19.09.2026] Vor allem anderen: nach Tod/Laden den
+    // alten Wurflinien-Controller wegwerfen, bevor ihn jemand anfasst.
+    ts_saveload_tick();
 
     // Reihenfolge = Lua Z.4720-4727.
     shell_refresh_muzzle();

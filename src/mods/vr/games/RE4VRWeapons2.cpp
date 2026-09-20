@@ -1592,6 +1592,15 @@ void RE4VRWeapons2::clone_destroy() {
         re4vr::destroy_game_object(m_clone.obj.obj);
     }
 
+    clone_forget();
+}
+
+// [LH_CLONE RESET 20.09.2026] Nur die gemerkten Zeiger loslassen -- KEIN
+// destroy_game_object. Nach Tod/Laden/Mercs-Levelstart ist das alte GO
+// abgebaut, aber weiter "lesbar" ([[saveload_leichen]]): ein destroy darauf
+// waere genau der Deref, den wir vermeiden wollen. Reste am Body raeumt
+// destroy_orphan_clones ohnehin sekuendlich weg.
+void RE4VRWeapons2::clone_forget() {
     drop(m_clone.obj);
     drop(m_clone.mesh);
 
@@ -2451,7 +2460,7 @@ void RE4VRWeapons2::lh_tick() {
 
 namespace {
 
-constexpr const char* KNIFE_DMG_PATH = "re4_vr/re4_knife_dmg.json";
+constexpr const char* KNIFE_DMG_PATH = "re4_vr/re4_vr_knife_dmg.json";   // [NAME 19.09.2026] war re4_knife_dmg.json
 
 constexpr const char* CALC_SIG =
     "calcInfo(chainsaw.HitController.DamageInfo, chainsaw.HitController, chainsaw.HitController)";
@@ -2750,21 +2759,41 @@ void RE4VRWeapons2::knife_di_guard() {
     const auto a = go_addr(pb);
 
     if (!a.has_value()) {
+        // [LH_CLONE RESET 20.09.2026] Body GANZ weg = Tod / Quickload /
+        // Mercs-Levelstart (Holster nutzt dasselbe Signal, [MERCS-LEVELSTART]).
+        // Ein Levelstart mit demselben Charakter kann dieselbe Adresse
+        // zurueckliefern -- der Adress-Sprung allein reicht also nicht.
+        m_di_body_weg = true;
+
         return;
     }
 
     if (!m_di_body_addr.has_value()) {
         m_di_body_addr = a;
+        m_di_body_weg = false;
 
         return;
     }
 
-    if (*a == *m_di_body_addr) {
-        return;
-    }
+    const bool neuer_body = (*a != *m_di_body_addr) || m_di_body_weg;
 
     m_di_body_addr = a;
+    m_di_body_weg = false;
+
+    if (!neuer_body) {
+        return;
+    }
+
     knife_drop_caches("Body-Wechsel (Save-Load / Stage / Charakter)");
+
+    // [LH_CLONE RESET 20.09.2026] Der Links-Klon gehoert MIT in diesen Reset:
+    // bisher ueberlebte __re4_knife_left_clone jeden Levelstart, und
+    // clone_manage baute das Messer im naechsten Frame in der linken Hand des
+    // NEUEN Charakters wieder auf (gesehen: Leon mit Messer links -> Wechsel
+    // auf Krauser -> Krauser startet mit Messer links).
+    re4vr::lua_set_bool("__re4_knife_left_clone", false);
+    re4vr::lua_set_bool("__re4_knife_left_intent", false);
+    clone_forget();
 }
 
 // ---- Ziel: naechster lebender Gegner ---------------------------------------

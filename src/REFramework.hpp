@@ -346,35 +346,8 @@ private:
     void draw_bindings_image();
     // [HINTERGRUND 11.09.2026] Menu.png bildfuellend hinter das Menue; false = nicht verfuegbar.
     bool draw_menu_background();
-    // Laedt die eingebetteten Menue-Bilder (Bindings + Hintergrund + Achievement).
+    // Laedt die eingebetteten Menue-Bilder (Bindings + Hintergrund).
     void create_menu_images_d3d12(ID3D12Device* device);
-
-public:
-    // ========================================================================
-    // [ACHIEVEMENT 13.09.2026] Die Tafel "WHAT A BAT JOKE" beim ERSTEN
-    // Fledermaus-Choke. Sie haengt bewusst NICHT am Menue: das Menue wuerde die
-    // Controller-Eingaben des Spiels schlucken. Stattdessen laeuft fuer ihre
-    // Standzeit derselbe VR-Menue-Kontext mit -- er zeichnet dann NUR das Bild
-    // in die rechte obere Ecke, und die drei Stellen in OverlayComponent, die
-    // sonst am offenen Menue haengen (Anker, Overlay-Textur, Quad-Layer),
-    // fragen zusaetzlich hier nach.
-    // ========================================================================
-    // Startet die Tafel fuer `seconds` Sekunden. Ein zweiter Aufruf waehrend der
-    // Anzeige setzt die Zeit neu.
-    void start_achievement_overlay(double seconds, int32_t which = 1);
-    // Laeuft die Tafel gerade?
-    bool is_achievement_overlay_active() const;
-    // Zeichnet die Tafel in den AKTUELLEN ImGui-Kontext (Vordergrund-DrawList),
-    // rechts oben mit Rand. Tut nichts, wenn sie nicht laeuft oder das Bild fehlt.
-    void draw_achievement_overlay();
-
-private:
-    std::chrono::steady_clock::time_point m_achievement_end{};
-    double m_achievement_seconds{0.0};
-    bool m_achievement_running{false};
-
-    // [ACHIEVEMENT 2 -- 15.09.2026] Welche Tafel laeuft gerade: 1 oder 2.
-    int32_t m_achievement_which{1};
 
     // Ein Frame des VR-Menue-Kontexts; laeuft in run_imgui_frame direkt nach
     // dem Desktop-Frame (m_imgui_mtx gehalten), gerendert in on_frame_d3d12.
@@ -645,8 +618,6 @@ private: // D3D12 members
             BLANK,
             RE4VR_BINDINGS_IMAGE,   // [BINDINGS 11.09.2026] Bild der Menue-Kategorie "Bindings"
             RE4VR_MENU_BACKGROUND,  // [HINTERGRUND 11.09.2026] Menu.png hinter dem ganzen Menue
-            RE4VR_ACHIEVEMENT,      // [ACHIEVEMENT 13.09.2026] Tafel beim ersten Fledermaus-Choke
-            RE4VR_ACHIEVEMENT2,     // [ACHIEVEMENT 2 -- 15.09.2026] Tafel beim dritten Messer in Ashley
             COUNT
         };
 
@@ -680,14 +651,6 @@ private: // D3D12 members
         // [HINTERGRUND 11.09.2026] Textur zum eingebetteten Menu.png, SRV im Slot
         // SRV::RE4VR_MENU_BACKGROUND. Leer, wenn das Laden scheiterte.
         ComPtr<ID3D12Resource> menu_background{};
-        // [ACHIEVEMENT 13.09.2026] Textur zum eingebetteten achivement.png, SRV im
-        // Slot SRV::RE4VR_ACHIEVEMENT. Leer, wenn das Laden scheiterte.
-        ComPtr<ID3D12Resource> achievement_image{};
-
-        // [ACHIEVEMENT 2 -- 15.09.2026] Zweite Tafel (achivement2.png), SRV im
-        // Slot SRV::RE4VR_ACHIEVEMENT2.
-        ComPtr<ID3D12Resource> achievement_image2{};
-
         std::array<void*, 2> imgui_backend_datas{};
         std::unique_ptr<DirectX::DX12::GraphicsMemory> graphics_memory{}; // for use in several places around REF
     } m_d3d12{};

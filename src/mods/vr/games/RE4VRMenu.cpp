@@ -24,6 +24,7 @@
 #include "RE4VRFirstPerson.hpp"
 #include "RE4VRGuestures.hpp"
 #include "RE4VRHolster.hpp"
+#include "RE4VRJiggle.hpp"
 #include "RE4VRKillswitch.hpp"
 #include "RE4VRMaterials.hpp"
 #include "RE4VRMerc.hpp"
@@ -819,7 +820,7 @@ void RE4VRMenu::draw_dev() {
         std::function<void()> draw;
     };
 
-    std::array<Entry, 23> entries{{
+    std::array<Entry, 24> entries{{
         {"Arm Chain",            [] { RE4VRArmChain::get()->draw_dev_ui(); }},
         {"Binding",              [] { RE4VRBinding::get()->draw_dev_ui(); }},
         {"Choke",                [] { RE4VRChoke::get()->draw_dev_ui(); }},
@@ -828,6 +829,7 @@ void RE4VRMenu::draw_dev() {
         {"Frametimes",           [] { RE4VR::get()->draw_dev_ui(); }},
         {"Guestures",            [] { RE4VRGuestures::get()->draw_dev_ui(); }},
         {"Holster",              [] { RE4VRHolster::get()->draw_dev_ui(); }},
+        {"Jiggle",               [] { RE4VRJiggle::get()->draw_dev_ui(); }},
         {"Materials",            [] { RE4VRMaterials::get()->draw_dev_ui(); }},
         {"Menu Editor",          [this] { draw_menu_editor(); }},
         {"Mercenaries (DLC)",    [] { RE4VRMerc::get()->draw_dev_ui(); }},

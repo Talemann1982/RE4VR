@@ -193,7 +193,57 @@ std::optional<bool> gun_is_holding_local() {
         return std::nullopt;
     }
 
-    auto* a = re4vr::call_safe<::REManagedObject*>(wl, "get_Item", *ewid);
+    // [GET_ITEM-FLUT 18.09.2026] Nicht mehr wl:get_Item(wid): mit dem Messer in
+    // der Hand ist die wid kein Schluessel, das Spiel warf JEDEN Frame eine
+    // ArgumentOutOfRangeException (per cdb belegt, 6/6 Treffer). Stattdessen
+    // _entries/_count selbst durchgehen wie RE4VRReload4::get_gun -- fehlt die
+    // wid, kommt still nullopt (daraus wird nie eine Sperre).
+    ::REManagedObject* entries = nullptr;
+    int32_t cnt = 0;
+
+    if (auto* td = utility::re_managed_object::get_type_definition(wl); td != nullptr) {
+        if (auto* f = td->get_field("_entries"); f != nullptr) {
+            entries = f->get_data<::REManagedObject*>(wl);
+        }
+
+        if (auto* f = td->get_field("_count"); f != nullptr) {
+            cnt = f->get_data<int32_t>(wl);
+        }
+    }
+
+    if (entries == nullptr) {
+        return std::nullopt;
+    }
+
+    ::REManagedObject* a = nullptr;
+
+    for (int32_t i = 0; i < cnt; ++i) {
+        // [ARRAY-BINDING] entries[i] ist das Index-Binding, nicht get_Item.
+        auto* e = re4vr::array_element(entries, i);
+
+        if (e == nullptr) {
+            continue;
+        }
+
+        ::REManagedObject* v = nullptr;
+
+        if (auto* td = utility::re_managed_object::get_type_definition(e); td != nullptr) {
+            if (auto* f = td->get_field("value"); f != nullptr) {
+                v = f->get_data<::REManagedObject*>(e);
+            }
+        }
+
+        if (v == nullptr) {
+            continue;
+        }
+
+        int32_t vwid = 0;
+
+        if (re4vr::try_call<int32_t>(v, "get_WeaponID", vwid) && vwid == *ewid) {
+            a = v;
+            break;
+        }
+    }
 
     if (a == nullptr) {
         return std::nullopt;

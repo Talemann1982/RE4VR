@@ -6790,7 +6790,36 @@ std::optional<bool> RE4VRReload3::set_mag_in_hand(bool active) {
 // Dispatch. Die Reihenfolge ist die Registrierungsreihenfolge in Lua:
 // Chicago -> Handcannon -> RL -> Flamethrower.
 // ============================================================================
+// [SAVE_LOAD-RESET 19.09.2026] Sonde re4_saveload_sonde: die Body-Adresse
+// springt NUR bei Save-Load/Tod (0,77 s ohne Body davor), nie im Spiel. Die
+// alte Waffe bleibt danach oft noch lesbar -> der tf-Test im Refresh sah keinen
+// Grund zum Neuholen. tf wegwerfen zwingt den vorhandenen [SAVE_LOAD]-Zweig.
+void RE4VRReload3::tick_saveload_reset() {
+    auto* body = re4vr::fc::body_go();
+
+    if (body == nullptr) {
+        return;
+    }
+
+    const auto a = reinterpret_cast<uintptr_t>(body);
+
+    if (!m_sl_body.has_value()) {
+        m_sl_body = a;
+
+        return;
+    }
+
+    if (a == *m_sl_body) {
+        return;
+    }
+
+    m_sl_body = a;
+    m_pe_cache = nullptr;
+    m_cwep.tf = nullptr;
+}
+
 void RE4VRReload3::on_frame() {
+    tick_saveload_reset();
     chicago_on_frame();
     hc_on_frame();
     rl_on_frame();

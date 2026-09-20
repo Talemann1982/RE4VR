@@ -28,6 +28,7 @@
 #include "../../VR.hpp"
 
 #include "RE4VRWeapons2.hpp"
+#include "RE4VRHolster.hpp"
 #include "RE4VRMotion.hpp"
 #include "RE4VRArmChain.hpp"
 #include "RE4VRAshleyMouth.hpp"
@@ -476,33 +477,13 @@ constexpr int STICK_LOG_MAX = 40;
 
 constexpr const char* CFG_PATH = "re4_vr/re4_vr_choke.json";
 
-// ---- [ACHIEVEMENT 13.09.2026] "WHAT A BAT JOKE" -------------------------
-// Eigene Datei: re4_vr_splash.json wird beim Schreiben ganz ersetzt, ein
-// zweiter Schluessel darin waere beim naechsten Start weg.
-constexpr const char* ACHIEVEMENT_CFG_PATH = "re4_vr/re4_vr_achievement.json";
 
 // [ACHIEVEMENT 2 -- 15.09.2026] Eigene Datei, wie angesagt: der Stich-Zaehler
 // und die Freischaltung des Schlangen-Chokes stehen fuer sich.
-constexpr const char* ACHIEVEMENT2_CFG_PATH = "re4_vr/re4_vr_achievement2.json";
-// Wartezeit zwischen dem Griff und der Tafel (Ansage 13.09.2026: rund 1 s).
-constexpr double ACHIEVEMENT_DELAY = 1.0;
-
-// [ASHLEY-MESSER 15.09.2026] Das WIEVIELTE Messer die Tafel ausloest.
-constexpr int32_t ASHLEY_STAB_GOAL = 3;
-// Standzeit der Tafel; der Countdown darin zaehlt von dieser Zahl herunter.
-constexpr double ACHIEVEMENT_SECONDS = 6.0;
-
 // [STAGGER-FENSTER 13.09.2026] So lange darf der Rueckwechsel hoechstens auf
 // einen Gameplay-Frame warten. Eine Trefferreaktion ist nach ein bis zwei
 // Sekunden durch; Tod und Ladevorgang dauern laenger und fallen damit heraus.
 constexpr double REEQUIP_MAX_WAIT = 6.0;
-
-// [TEST 13.09.2026 -- Ansage "zum Testen am Anfang zeigen"] true = die Tafel
-// kommt bei JEDEM Spielstart einmal von selbst (ACHIEVEMENT_TEST_AFTER
-// Sekunden nach dem ersten Choke-Tick), damit man sie nicht erst in der
-// Kanalisation suchen muss. Fuer die Veroeffentlichung wieder auf false --
-// die Fledermaus-Erkennung selbst haengt NICHT daran.
-constexpr bool ACHIEVEMENT_TEST_AT_START = false;
 
 // ---- [ASHLEY 13.09.2026] Die Begleitung greifen -------------------------
 // GEMESSEN am 13.09. (zzz_re4_ashley_probe, Lauf 1+2): die PartnerContextList
@@ -558,7 +539,6 @@ constexpr float REPLY_MIN_DB = -30.0f;
 
 constexpr const char* ASHLEY_BODY_NPC = "ch2a1z0_body";
 constexpr const char* ASHLEY_BODY_PLAYABLE = "ch0a1z0_body";
-constexpr double ACHIEVEMENT_TEST_AFTER = 8.0;
 
 // ---- Konstanten aus dem Lua-Kopf (keine UI, keine Config) ----------------
 constexpr const char* PARENT_JOINT = "L_Palm";
@@ -790,127 +770,13 @@ void RE4VRChoke::ensure_types() {
 }
 
 // ============================================================================
-// [ACHIEVEMENT 13.09.2026] Erste gegriffene Fledermaus
-// ============================================================================
-// Merkt den Griff SOFORT auf der Platte und stellt die Tafel eine Sekunde
-// spaeter an. Zweimal soll sie nie kommen -- weder im selben Spielstart
-// (m_achievement_seen) noch im naechsten (die JSON).
-void RE4VRChoke::achievement_arm() {
-    if (!m_achievement_checked) {
-        m_achievement_checked = true;
-
-        // [FALLE, s. splash_tick] json_load liefert bei FEHLENDER Datei ein
-        // leeres Objekt -- es entscheidet allein der Schluessel.
-        const auto j = re4vr::json_load(ACHIEVEMENT_CFG_PATH);
-        m_achievement_seen = j.is_object() && j.contains("bat_choke");
-    }
-
-    if (m_achievement_seen || m_achievement_due > 0.0) {
-        return;
-    }
-
-    m_achievement_seen = true;
-    m_achievement_due = clock_now() + ACHIEVEMENT_DELAY;
-
-    // [ASHLEY-MESSER 15.09.2026] Erst LADEN, dann ergaenzen: hier stand ein
-    // frisches Objekt, das die ganze Datei ueberschrieben hat -- der
-    // Stich-Zaehler daneben waere bei jedem Schreiben verloren gegangen.
-    auto j = re4vr::json_load(ACHIEVEMENT_CFG_PATH);
-
-    if (!j.is_object()) {
-        j = nlohmann::json::object();
-    }
-
-    j["bat_choke"] = true;
-    re4vr::json_save(ACHIEVEMENT_CFG_PATH, j);
-}
-
-// ============================================================================
-// [ASHLEY-MESSER 15.09.2026] Drei Messer in Ashley -- das dritte gibt die Tafel
-// ============================================================================
-// Eigene Datei (re4_vr_achievement2.json), damit Zaehler und Freischaltung fuer
-// sich stehen. Das dritte Messer setzt "snake_choke" und stellt die zweite Tafel
-// an -- genau einmal, weil der Schluessel danach in der Datei steht.
-//
-// [16.09.2026] Der Schluessel heisst weiter "snake_choke", GIBT den Griff aber
-// nicht mehr frei: der Schlangen-Choke ist seit 16.09. ganz ausgebaut. Die Tafel
-// bleibt, womit sie kuenftig belohnt wird, ist offen.
-void RE4VRChoke::ashley_stab() {
-    auto j = re4vr::json_load(ACHIEVEMENT2_CFG_PATH);
-
-    if (!j.is_object()) {
-        j = nlohmann::json::object();
-    }
-
-    if (m_ashley_stabs < 0) {
-        m_ashley_stabs = (j.contains("ashley_stabs") && j["ashley_stabs"].is_number_integer())
-            ? j["ashley_stabs"].get<int32_t>() : 0;
-    }
-
-    ++m_ashley_stabs;
-    j["ashley_stabs"] = m_ashley_stabs;
-
-    re4vr::lua_set_number("__re4_ashley_stabs", static_cast<double>(m_ashley_stabs));
-
-    // [HAERTUNG 16.09.2026] Ohne die Datei des ersten Achievements gibt es das
-    // zweite nicht -- der Zaehler laeuft weiter, die Freischaltung wartet.
-    if (m_ashley_stabs >= ASHLEY_STAB_GOAL && !j.contains("snake_choke") && achievement_unlocked()) {
-        j["snake_choke"] = true;
-
-        m_snake_checked = true;
-        m_snake_unlocked = true;
-
-        // Dieselbe Verzoegerung wie beim ersten: Tafel und Ton kommen eine
-        // Sekunde nach dem Stich, nicht mitten in der Bewegung.
-        if (m_achievement_due <= 0.0) {
-            m_achievement_due = clock_now() + ACHIEVEMENT_DELAY;
-            m_achievement_which = 2;
-        }
-    }
-
-    re4vr::json_save(ACHIEVEMENT2_CFG_PATH, j);
-}
-
-// [DREI MESSER 15.09.2026, umgewidmet 16.09.2026] Sagt, ob das zweite
-// Achievement steht. Es gab frueher den Schlangen-Griff frei (der ist seit
-// 16.09. ausgebaut) und schaltet stattdessen Ashleys ANTWORTEN frei: nur wenn das
-// hier true ist, gibt es den Regler im Menue und reagiert sie auf eine Geste.
-// Der JSON-Schluessel heisst weiter "snake_choke" -- wer es schon hat, soll es
-// nicht durch eine Umbenennung verlieren.
-bool RE4VRChoke::reply_unlocked() {
-    if (!m_snake_checked) {
-        m_snake_checked = true;
-
-        const auto j = re4vr::json_load(ACHIEVEMENT2_CFG_PATH);
-        m_snake_unlocked = j.is_object() && j.contains("snake_choke");
-    }
-
-    // [HAERTUNG 16.09.2026] Der zweite Schluessel allein reicht nicht: fehlt
-    // "bat_choke" in re4_vr_achievement.json, gilt auch das zweite als nicht da.
-    return m_snake_unlocked && achievement_unlocked();
-}
-
-bool RE4VRChoke::achievement_unlocked() {
-    if (!m_achievement_checked) {
-        m_achievement_checked = true;
-
-        const auto j = re4vr::json_load(ACHIEVEMENT_CFG_PATH);
-        m_achievement_seen = j.is_object() && j.contains("bat_choke");
-    }
-
-    return m_achievement_seen;
-}
-
 // [ASHLEY 13.09.2026] Die Begleitung als Griffziel. Bewusst KEINE Freigaben
 // (Trefferreaktion, Parade): ihr Kontext hat gar kein get_ActionState -- die
 // Abfrage aus pick_target liefe dort ins Leere. Entschieden wird wie beim
 // Tier allein ueber Reichweite, dazu dasselbe Hoehenfenster wie beim Gegner.
 ::REManagedObject* RE4VRChoke::pick_ashley(const glm::vec3& hp) {
-    // OHNE das Achievement gibt es sie als Ziel nicht (Ansage 13.09.2026).
-    if (!achievement_unlocked()) {
-        return nullptr;
-    }
-
+    // [ACHIEVEMENTS AUSGEBAUT 20.09.2026] Ashley ist IMMER greifbar -- keine
+    // Fledermaus, kein Schluessel in einer JSON.
     auto* cm = character_manager();
     auto* list = cm != nullptr
         ? re4vr::call_safe<::REManagedObject*>(cm, "get_PartnerContextList")
@@ -2537,14 +2403,6 @@ void RE4VRChoke::vlog_add(float v0, float pk, bool stuck) {
 void RE4VRChoke::knife_hit(const StickInfo* st) {
     if (m_held.ctx.obj == nullptr) {
         return;
-    }
-
-    // [ASHLEY-MESSER 15.09.2026] Hier und nur hier wird gezaehlt: beide
-    // Trefferwege (Spitzen-Erkenner und die alte Swing-Flanke) laufen genau
-    // einmal pro Stich hier durch, und der Spitzen-Weg haelt selbst die
-    // Rehit-Sperre von 0,35 s -- ein Stich kann also nicht doppelt zaehlen.
-    if (m_held.is_ashley) {
-        ashley_stab();
     }
 
     bool done = false;
@@ -4661,11 +4519,7 @@ void RE4VRChoke::stick_into_victim(::REManagedObject* vctx, ::REManagedObject* v
 // REPLY_RANGE_M, war sie gemeint.
 // ============================================================================
 void RE4VRChoke::ashley_reply(bool fuck) {
-    // Ohne das zweite Achievement gibt es die Antworten nicht.
-    if (!reply_unlocked()) {
-        return;
-    }
-
+    // [ACHIEVEMENTS AUSGEBAUT 20.09.2026] Ihre Antworten gibt es immer.
 
     if (re4vr::ashley_reply_count(fuck) <= 0) {
         return;   // fuer diese Geste liegen noch keine WAVs in der DLL
@@ -4793,6 +4647,21 @@ void RE4VRChoke::ashley_reply(bool fuck) {
     m_mouth_kind = fuck ? 2 : 1;
     m_mouth_wav = idx;
     m_mouth_t0 = clock_now();
+    m_mouth_serial = re4vr::wav_serial();
+}
+
+// [JIGGLE 19.09.2026] s. RE4VRChoke.hpp
+void RE4VRChoke::play_reply_with_mouth(bool fuck, int idx, float db) {
+    if (idx < 0 || !re4vr::play_ashley_reply_wav(fuck, idx, db)) {
+        return;
+    }
+
+    m_ashley_voice_t = clock_now();   // s. last_ashley_voice
+
+    m_mouth_kind = fuck ? 2 : 1;
+    m_mouth_wav = idx;
+    m_mouth_t0 = clock_now();
+    m_mouth_serial = re4vr::wav_serial();
 }
 
 // Die wartende Antwort wird hier faellig -- im on_frame, nicht an den Griff
@@ -4818,6 +4687,7 @@ void RE4VRChoke::reply_tick() {
     m_mouth_kind = fuck ? 2 : 1;
     m_mouth_wav = idx;
     m_mouth_t0 = clock_now();
+    m_mouth_serial = re4vr::wav_serial();
 }
 
 ::REManagedObject* RE4VRChoke::face_transform_of_held() {
@@ -4853,6 +4723,15 @@ void RE4VRChoke::mouth_tick() {
     // Griff vorher los ist -- unsere WAVs starten ohnehin nur beim GRIFF,
     // eine zweite Sperre ueber das Halten brauchte es dafuer nie.
     if (!m_cfg.mouth_on || m_mouth_wav < 0) {
+        return;
+    }
+
+    // [TON ABGESCHNITTEN 20.09.2026] Ein neuer eigener Ton stoppt den alten
+    // (SND_PURGE). Ohne diese Pruefung liefe die Mundbewegung des alten
+    // Spruchs weiter, obwohl niemand mehr redet.
+    if (re4vr::wav_serial() != m_mouth_serial) {
+        m_mouth_wav = -1;
+
         return;
     }
 
@@ -6200,7 +6079,9 @@ void RE4VRChoke::grab(::REManagedObject* ectx) {
     // wird am Ende des ersten Frames gemessen (s. neck_measure)
     m_held.neck_off.reset();
 
-    // Messer in die rechte Hand ziehen (und den Links-Klon weichen lassen)
+    // Messer in die rechte Hand ziehen (und den Links-Klon weichen lassen).
+    // [ASHLEY BARE HANDS 20.09.2026 -- Ansage] NUR bei Ashley: kein Messer,
+    // leere rechte Hand. Gegner und Tiere bleiben unveraendert.
     if (m_cfg.knife_to_right) {
         auto* ctx = player_ctx();
         auto* hgo = ctx != nullptr
@@ -6230,10 +6111,28 @@ void RE4VRChoke::grab(::REManagedObject* ectx) {
 
         if (pe != nullptr) {
             re4vr::lua_set_number("__re4_our_equip_until", clock_now() + 0.5);
-            re4vr::lua_set_number("__re4_knife_draw_ours_t", clock_now());
-            re4vr::lua_set_bool("__re4_knife_left_intent", false);
-            re4vr::lua_set_bool("__re4_knife_left_clone", false);
-            re4vr::call_safe<void*>(pe, "requestEquipKnife");
+
+            // [ASHLEY 20.09.2026 -- Ansage] Bei IHR haengt es davon ab, was
+            // schon in der Hand lag: ein MESSER bleibt (damit laeuft alles wie
+            // beim Gegner), eine SCHUSSWAFFE weicht der leeren Hand und kommt
+            // nach dem Loslassen zurueck. Gegner und Tiere: unveraendert.
+            const bool ashley_bare =
+                m_held.is_ashley && m_held.knife_was != std::optional<bool>{true};
+
+            if (ashley_bare) {
+                // Ueber den HOLSTER, nicht zu Fuss: holster_bare() stellt
+                // zusaetzlich die automatische Wiederbewaffnung still
+                // (ar.suppress). Ohne das kam die Waffe 0,2 s spaeter zurueck.
+                if (auto& ho = RE4VRHolster::get(); ho != nullptr) {
+                    ho->holster_bare();
+                }
+            } else {
+                re4vr::lua_set_number("__re4_knife_draw_ours_t", clock_now());
+                re4vr::lua_set_bool("__re4_knife_left_intent", false);
+                re4vr::lua_set_bool("__re4_knife_left_clone", false);
+                re4vr::call_safe<void*>(pe, "requestEquipKnife");
+            }
+
             re4vr::call_safe<void*>(pe, "execChangeWeapon");
         }
     }
@@ -6243,8 +6142,12 @@ void RE4VRChoke::grab(::REManagedObject* ectx) {
     // man sich darauf nicht mehr -- binding laeuft seit dem Port NACH uns.
     // Den Zustand setzt deshalb flip_carry() direkt an RE4VRMotion, sobald das
     // Messer da ist.
-    re4vr::lua_set_bool("__vr_knife_flip", true);
-    RE4VRMotion::get()->force_knife_flip();
+    // [ASHLEY 20.09.2026] Ohne Messer gibt es nichts zu drehen; mit Messer
+    // laeuft der Flip auch bei ihr wie beim Gegner.
+    if (!m_held.is_ashley || m_held.knife_was == std::optional<bool>{true}) {
+        re4vr::lua_set_bool("__vr_knife_flip", true);
+        RE4VRMotion::get()->force_knife_flip();
+    }
 
     store(m_held.ctx, ectx);
     store(m_held.tf, etf);
@@ -6551,6 +6454,10 @@ void RE4VRChoke::on_lua_state_destroyed(sol::state& lua) {
     m_cfg_loaded = false;
 }
 
+bool RE4VRChoke::is_holding() const {
+    return m_held.ctx.obj != nullptr;
+}
+
 bool RE4VRChoke::is_choking() const {
     return (clock_now() - re4vr::lua_get_number("__re4_choke_seen", 0.0)) < 0.15;
 }
@@ -6578,6 +6485,11 @@ bool RE4VRChoke::is_choking() const {
 // (knife_flip_spin steigt vorher aus). Danach gehoert er wieder dem Spieler.
 void RE4VRChoke::flip_carry() {
     if (m_held.ctx.obj == nullptr) {
+        return;
+    }
+
+    // [ASHLEY 20.09.2026] Nur wenn bei ihr die Hand leer gemacht wurde.
+    if (m_held.is_ashley && m_held.knife_was != std::optional<bool>{true}) {
         return;
     }
 
@@ -6698,17 +6610,6 @@ void RE4VRChoke::choke_ruhe_tick() {
 void RE4VRChoke::on_frame() {
     if (re4vr::mods_gated()) {
         return;
-    }
-
-    // [TEST 13.09.2026] Die Tafel einmal pro Spielstart von selbst zeigen --
-    // nur zum Ansehen, ohne Fledermaus. Haengt allein an
-    // ACHIEVEMENT_TEST_AT_START und laesst die JSON unberuehrt, der echte
-    // Fledermaus-Weg bleibt davon unabhaengig.
-    if constexpr (ACHIEVEMENT_TEST_AT_START) {
-        if (!m_achievement_test_armed) {
-            m_achievement_test_armed = true;
-            m_achievement_due = clock_now() + ACHIEVEMENT_TEST_AFTER;
-        }
     }
 
     ensure_types();
@@ -6992,6 +6893,7 @@ void RE4VRChoke::on_frame() {
                 if (valid_not_false(ago) && m_t_sndc != nullptr) {
                     if (auto* con = get_component(ago, m_t_sndc); con != nullptr) {
                         re4vr::call_safe<void*>(con, "trigger(System.UInt32)", id);
+                        m_ashley_voice_t = now;   // sie redet -- s. last_ashley_voice
                     }
                 }
             } else {
@@ -7024,32 +6926,17 @@ void RE4VRChoke::on_frame() {
             // anderer Namensraum in der DLL.
             if (ash) {
                 re4vr::play_ashley_wav(widx);
+                m_ashley_voice_t = clock_now();   // s. last_ashley_voice
 
                 // [ASHLEY MUND 16.09.2026] Der Mund folgt genau diesem Spruch.
                 m_mouth_kind = 0;
                 m_mouth_wav = widx;
                 m_mouth_t0 = clock_now();
+                m_mouth_serial = re4vr::wav_serial();
             } else {
                 re4vr::play_taunt_wav(widx);
             }
         }
-    }
-
-    // [ACHIEVEMENT 13.09.2026] Genau wie der Spruch: die Tafel steht hier an,
-    // eine Sekunde nach dem Griff an der ersten Fledermaus. Ton und Bild
-    // starten im SELBEN Frame.
-    if (m_achievement_due > 0.0 && clock_now() >= m_achievement_due) {
-        m_achievement_due = 0.0;
-
-        re4vr::play_achievement_wav();
-
-        if (g_framework != nullptr) {
-            // [ACHIEVEMENT 2 -- 15.09.2026] Dieselbe Ecke, derselbe Rahmen,
-            // derselbe Jingle -- nur die Tafel ist eine andere.
-            g_framework->start_achievement_overlay(ACHIEVEMENT_SECONDS, m_achievement_which);
-        }
-
-        m_achievement_which = 1;
     }
 
     auto* vr = VR::get().get();
@@ -7331,6 +7218,12 @@ void RE4VRChoke::on_frame() {
         // [SCHALTER VOR CHOKE 17.09.2026] Hand am Feuerwahlschalter des
         // Gewehrs -- gesetzt von RE4VRReload2::rf_update_switch.
         busy_grund = "waffenschalter";
+    } else if (re4vr::lua_get_tribool("__re4_fl_active") == 1
+               && re4vr::lua_get_tribool("__re4_fl_hand_busy") != 1) {
+        // [LAMPE VOR CHOKE 19.09.2026 -- Ansage des Users] Taschenlampe an und
+        // in der linken Hand -> kein Choke. Dieselbe Bedingung, mit der
+        // RE4VRBinding den Lampen-Flip freigibt (fl_active und nicht weggedockt).
+        busy_grund = "taschenlampe";
     }
 
     const bool hand_busy = busy_grund != nullptr;
@@ -7393,13 +7286,6 @@ void RE4VRChoke::on_frame() {
 
             grab(tgt);
 
-            // [ACHIEVEMENT 13.09.2026] Erste gegriffene FLEDERMAUS -> die Tafel
-            // steht an. Gemerkt wird sofort (nicht erst nach der Wartezeit),
-            // damit ein Absturz in dieser Sekunde sie nicht erneut ausloest.
-            if (animal && species == SPECIES_BAT) {
-                achievement_arm();
-            }
-
             // [TAUNT-WAV 2026-09-12] Griff an einem TIER -> ein zufaelliges der
             // eingebetteten eigenen WAVs (Shuffle-Beutel: jedes einmal, dann neu
             // gemischt). Gilt fuer alle vier Tierarten.
@@ -7441,7 +7327,20 @@ void RE4VRChoke::on_frame() {
             // sonst sind die acht Dateien in einer Minute durchgehoert.
             // Gezaehlt wird der Griff, nicht die Zeit.
             if (ashley) {
-                // [ASHLEY-LINE 16.09.2026] Bei JEDEM Griff sagt sie etwas:
+                // [SHUFFLE 20.09.2026 -- Ansage] Sie sagt NICHT mehr bei jedem
+                // Griff etwas, sondern nur bei jedem 3. bis 4. Dadurch bleibt
+                // Platz fuer den Spruch nach einem Schlag (s. RE4VRJiggle).
+                ++m_ashley_voice_grabs;
+                m_ashley_spoke_hold = m_ashley_voice_grabs >= m_ashley_voice_next;
+
+                if (m_ashley_spoke_hold) {
+                    m_ashley_voice_grabs = 0;
+                    m_ashley_voice_next = 3 + (std::rand() % 2);   // 3 oder 4
+                }
+            }
+
+            if (ashley && m_ashley_spoke_hold) {
+                // [ASHLEY-LINE 16.09.2026] Wenn sie dran ist, sagt sie:
                 // zuerst immer ASHLEY_CHOKE_LINE, danach entweder unser
                 // eigener WAV-Spruch (nur alle 4-6 Griffe -- sonst sind die
                 // acht Dateien in einer Minute durch) oder eine ihrer

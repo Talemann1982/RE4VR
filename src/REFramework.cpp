@@ -1,4 +1,4 @@
-#include <algorithm>   // [ACHIEVEMENT 13.09.2026] std::clamp/std::min in draw_achievement_overlay
+#include <algorithm>
 #include <chrono>
 #include <cmath>       // [ACHIEVEMENT 13.09.2026] std::sqrt fuer die Diagonale
 #include <filesystem>
@@ -27,8 +27,6 @@ extern "C" {
 #include "re2-imgui/font_re4_title.hpp"               // Ueberschriften (11.09.2026)
 #include "re2-imgui/img_re4vr_bindings.hpp"           // Bild der Kategorie "Bindings" (11.09.2026)
 #include "re2-imgui/img_re4vr_menu_background.hpp"    // Hintergrund des Menues (11.09.2026)
-#include "re2-imgui/img_re4vr_achievement.hpp"        // Achievement-Tafel (13.09.2026)
-#include "re2-imgui/img_re4vr_achievement2.hpp"       // Zweite Tafel (15.09.2026)
 
 #include <../../directxtk12-src/Inc/ResourceUploadBatch.h>
 #include <../../directxtk12-src/Inc/WICTextureLoader.h>
@@ -852,11 +850,6 @@ void REFramework::run_imgui_frame(bool from_present) {
     }
 
     draw_ui();
-
-    // [ACHIEVEMENT 13.09.2026] Auch im Desktop-Kontext, damit die Tafel im
-    // Spiegelbild (und am Flachbildschirm ohne Headset) mitlaeuft. Sie haengt
-    // NICHT an m_draw_ui -- draw_ui steigt bei geschlossenem Menue vorher aus.
-    draw_achievement_overlay();
 
     m_last_draw_ui = m_draw_ui;
 
@@ -2036,12 +2029,7 @@ void REFramework::run_vr_menu_frame() {
         m_vr_menu.scroll_delta = 0.0f;
     }
 
-    // [ACHIEVEMENT 13.09.2026] Der VR-Kontext laeuft auch fuer die Tafel allein --
-    // dann aber OHNE jede Eingabe (s. achievement_only weiter unten), sonst
-    // schluckte das Menue waehrend der 6 Sekunden die Controller des Spiels.
-    const bool achievement_only = !m_draw_ui && is_achievement_overlay_active();
-
-    const bool wanted = m_initialized && (m_draw_ui || achievement_only)
+    const bool wanted = m_initialized && m_draw_ui
                         && m_renderer_type == RendererType::D3D12
                         && m_d3d12.imgui_backend_datas[1] != nullptr
                         && vr->is_hmd_active();
@@ -2097,26 +2085,6 @@ void REFramework::run_vr_menu_frame() {
     // aber ohne dessen Fokus-Transparenz.
     ImGui::GetStyle() = style;
     ImGui::GetStyle().Alpha = 1.0f;
-
-    // [ACHIEVEMENT 13.09.2026] Menue zu, nur die Tafel: einen nackten Frame
-    // zeichnen und SOFORT zurueck -- kein Stick, kein Knopf, kein Nav-Cursor.
-    // Danach liegt gueltige Draw-Data im Kontext, den on_frame_d3d12 in das
-    // Rendertarget rendert; angehaengt wird der Layer, weil OverlayComponent
-    // die Tafel genauso gelten laesst wie das offene Menue.
-    if (achievement_only) {
-        io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
-
-        ImGui::NewFrame();
-        draw_achievement_overlay();
-        ImGui::EndFrame();
-        ImGui::Render();
-
-        m_vr_menu.has_draw_data = true;
-
-        ImNodes::SetImGuiContext(main_ctx);
-        ImGui::SetCurrentContext(main_ctx);
-        return;
-    }
 
     // ---------------------------------------------------------------------
     // [MENUE-STEUERUNG 11.09.2026] Controller statt Laser, ueber ImGuis
@@ -2355,10 +2323,6 @@ void REFramework::run_vr_menu_frame() {
     m_vr_menu.drawing = true;
     draw_menu_window(true);
     m_vr_menu.drawing = false;
-
-    // [ACHIEVEMENT 13.09.2026] Faellt die Tafel in ein offenes Menue, liegt sie
-    // darueber -- dieselbe Ecke, dieselbe Restzeit.
-    draw_achievement_overlay();
 
     ImGui::EndFrame();
     ImGui::Render();
@@ -4065,13 +4029,6 @@ void REFramework::create_menu_images_d3d12(ID3D12Device* device) {
         D3D12::SRV::RE4VR_BINDINGS_IMAGE, L"Framework::m_d3d12.bindings_image");
     m_d3d12.menu_background = load_embedded_image_d3d12(device, re4vr_menu_background_png, sizeof(re4vr_menu_background_png),
         D3D12::SRV::RE4VR_MENU_BACKGROUND, L"Framework::m_d3d12.menu_background");
-    // [ACHIEVEMENT 13.09.2026] Die Tafel beim ersten Fledermaus-Choke.
-    m_d3d12.achievement_image = load_embedded_image_d3d12(device, re4vr_achievement_png, sizeof(re4vr_achievement_png),
-        D3D12::SRV::RE4VR_ACHIEVEMENT, L"Framework::m_d3d12.achievement_image");
-
-    // [ACHIEVEMENT 2 -- 15.09.2026] Die Tafel beim dritten Messer in Ashley.
-    m_d3d12.achievement_image2 = load_embedded_image_d3d12(device, re4vr_achievement2_png, sizeof(re4vr_achievement2_png),
-        D3D12::SRV::RE4VR_ACHIEVEMENT2, L"Framework::m_d3d12.achievement_image2");
 }
 
 // Eingebettetes Bild (JPG/PNG) per DirectXTK12/WIC in eine Textur laden und ihre
@@ -4273,131 +4230,6 @@ void REFramework::draw_bindings_image() {
     }
 
     ImGui::PopStyleVar(3);
-}
-
-// ============================================================================
-// [ACHIEVEMENT 13.09.2026] Die Tafel "WHAT A BAT JOKE"
-// ============================================================================
-void REFramework::start_achievement_overlay(double seconds, int32_t which) {
-    if (seconds <= 0.0) {
-        return;
-    }
-
-    m_achievement_which = (which == 2) ? 2 : 1;
-    m_achievement_seconds = seconds;
-    m_achievement_end = std::chrono::steady_clock::now()
-        + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(seconds));
-    m_achievement_running = true;
-}
-
-bool REFramework::is_achievement_overlay_active() const {
-    return m_achievement_running && std::chrono::steady_clock::now() < m_achievement_end;
-}
-
-void REFramework::draw_achievement_overlay() {
-    if (!is_achievement_overlay_active()) {
-        m_achievement_running = false;
-        return;
-    }
-
-    // [ACHIEVEMENT 2 -- 15.09.2026] Beide Tafeln laufen durch dieselbe
-    // Darstellung -- gleiche Ecke, gleicher Rahmen, gleicher Puls.
-    const bool zweite = m_achievement_which == 2;
-    auto* const bild = zweite ? m_d3d12.achievement_image2.Get() : m_d3d12.achievement_image.Get();
-    const auto slot = zweite ? D3D12::SRV::RE4VR_ACHIEVEMENT2 : D3D12::SRV::RE4VR_ACHIEVEMENT;
-
-    if (m_renderer_type != RendererType::D3D12 || bild == nullptr
-        || m_d3d12.srv_desc_heap == nullptr) {
-        return;
-    }
-
-    auto device = m_d3d12_hook->get_device();
-
-    if (device == nullptr) {
-        return;
-    }
-
-    const auto desc = bild->GetDesc();
-    const auto display = ImGui::GetIO().DisplaySize;
-
-    if (desc.Width == 0 || desc.Height == 0 || display.x < 1.0f || display.y < 1.0f) {
-        return;
-    }
-
-    // Groesse: die Diagonale der Tafel ist ein DRITTEL der Bilddiagonale (Ansage
-    // 13.09.2026). Ueber die Diagonale statt ueber die Breite, damit sie bei
-    // einem anderen Seitenverhaeltnis gleich gross wirkt.
-    const float img_aspect = (float)desc.Width / (float)desc.Height;
-    const float want_diag = std::sqrt(display.x * display.x + display.y * display.y) / 3.0f;
-    const float w = want_diag * img_aspect / std::sqrt(img_aspect * img_aspect + 1.0f);
-    const float h = w / img_aspect;
-
-    // Rand zu den Bildkanten: 3 % der Bildbreite.
-    const float margin = display.x * 0.03f;
-    const ImVec2 p0{display.x - margin - w, margin};
-    const ImVec2 p1{p0.x + w, p0.y + h};
-
-    // Ein- und Ausblenden, damit sie nicht hart aufpoppt.
-    const double rest = std::chrono::duration<double>(m_achievement_end - std::chrono::steady_clock::now()).count();
-    const double shown = m_achievement_seconds - rest;
-    const float fade = (float)std::clamp(std::min(shown / 0.35, rest / 0.5), 0.0, 1.0);
-    const auto alpha = (int)(fade * 255.0f + 0.5f);
-
-    auto* const dl = ImGui::GetForegroundDrawList();
-
-    if (dl == nullptr) {
-        return;
-    }
-
-    // [RAHMEN 13.09.2026 -- Ansage "flashy rounded"] Ecken gerundet, Gold, und
-    // ein Schein, der im Takt pulst. Reihenfolge: erst der Schein von aussen
-    // nach innen, dann das Bild, zuletzt die Kanten -- so liegt nichts Helles
-    // ueber der Tafel selbst.
-    const float rounding = h * 0.055f;
-
-    // Puls zwischen 0 und 1, rund eine Sekunde pro Durchgang.
-    const float pulse = 0.5f + 0.5f * std::sin((float)shown * 6.2831853f * 0.9f);
-
-    // Der Schein: mehrere Rechtecke nach aussen, jedes schwaecher. Ihre
-    // Staerke haengt am Puls -- deshalb "flashy" statt nur gerahmt.
-    const float glow_w = h * 0.05f;
-
-    for (int i = 6; i >= 1; --i) {
-        const float f = (float)i / 6.0f;
-        const float grow = glow_w * f;
-        const int ga = (int)(alpha * (1.0f - f) * 0.30f * (0.45f + 0.55f * pulse) + 0.5f);
-
-        if (ga <= 0) {
-            continue;
-        }
-
-        dl->AddRect(ImVec2{p0.x - grow, p0.y - grow}, ImVec2{p1.x + grow, p1.y + grow},
-            IM_COL32(255, 196, 64, ga), rounding + grow, 0, h * 0.018f);
-    }
-
-    dl->AddImageRounded((ImTextureID)m_d3d12.get_gpu_srv(device, slot).ptr,
-        p0, p1, ImVec2{0.0f, 0.0f}, ImVec2{1.0f, 1.0f}, IM_COL32(255, 255, 255, alpha), rounding);
-
-    // Aussen die goldene Kante, innen eine duenne helle Linie -- die haelt den
-    // Rahmen auch vor hellem Spielbild sichtbar.
-    const int gold_a = (int)(alpha * (0.72f + 0.28f * pulse) + 0.5f);
-
-    dl->AddRect(p0, p1, IM_COL32(232, 176, 48, gold_a), rounding, 0, h * 0.020f);
-    dl->AddRect(ImVec2{p0.x + h * 0.016f, p0.y + h * 0.016f},
-                ImVec2{p1.x - h * 0.016f, p1.y - h * 0.016f},
-                IM_COL32(255, 236, 180, (int)(alpha * 0.55f + 0.5f)), rounding * 0.75f, 0, h * 0.006f);
-
-    // Der kleine Countdown: unter der rechten unteren Ecke der Tafel.
-    char buf[8]{};
-    std::snprintf(buf, sizeof(buf), "%d", (int)rest + 1);
-
-    auto* const font = vr_font_heading() != nullptr ? vr_font_heading() : ImGui::GetFont();
-    const float font_size = h * 0.13f;
-    const auto size = font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, buf);
-    const ImVec2 tp{p1.x - size.x, p1.y + font_size * 0.15f};
-
-    dl->AddText(font, font_size, ImVec2{tp.x + 2.0f, tp.y + 2.0f}, IM_COL32(0, 0, 0, alpha), buf);
-    dl->AddText(font, font_size, tp, IM_COL32(232, 176, 48, alpha), buf);
 }
 
 void REFramework::deinit_d3d12() {

@@ -56,6 +56,11 @@ public:
     void set_suppress(bool v);              // __re4_knife_set_suppress
     void holster_exec();                    // __re4_knife_holster_exec
     void holster_bare();                    // __re4_knife_holster_bare
+
+    // [JIGGLE 20.09.2026] Ist die Hand WIRKLICH leer? Am Mesh gemessen, nicht
+    // an get_EquipWeaponID (das luegt bei leeren Haenden). Nativ, damit andere
+    // Module nicht ueber das Lua-Global __vr_bare_hands gehen muessen.
+    bool hands_are_bare() { return !weapon_actually_in_hand().in_hand; }
     bool force_change_to_main();            // __re4_force_change_to_main
     void play_knife_grab_sound();           // __re4_knife_play_grab_sound
 
@@ -280,6 +285,11 @@ private:
 
     AutoRedraw m_ar{};
     bool m_merc_body_weg{false};
+
+    // [SAVE-LOAD WIE MERCS 19.09.2026] Body-Adresse beim letzten Blick. Springt
+    // sie (Tod/Laden in der Kampagne), wird der Waffen-Snapshot geloescht --
+    // dasselbe wie MERCS-LEVELSTART.
+    std::optional<uintptr_t> m_sl_body_addr{};
 
     // Grab-Dispatch (Lua Z.1674-1704)
     bool m_grip_prev{false};

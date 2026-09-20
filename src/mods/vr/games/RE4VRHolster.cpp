@@ -3110,6 +3110,25 @@ void RE4VRHolster::auto_redraw_tick(const InHand& ih) {
         }
     }
 
+    // [SAVE-LOAD WIE MERCS 19.09.2026] Belegt in der Messer-Sonde 23:46:52:
+    // beim Laden ruestete das Spiel die Granate aus dem Spielstand aus
+    // (equipWeapon 6108), 0,44 s spaeter holte die Wiederbewaffnung unten die
+    // Pistole von VOR dem Tod zurueck (7x equipWeapon 6103 im 0,2-s-Takt).
+    // Nach Tod/Laden gilt der alte Snapshot nicht mehr -- genau wie beim
+    // Mercs-Levelstart. Signal: Body-Adresse springt (Sonde
+    // re4_saveload_sonde: nur bei Tod/Laden, nie im laufenden Spiel).
+    if (auto* sl_body = re4vr::body_game_object(); sl_body != nullptr) {
+        const auto a = reinterpret_cast<uintptr_t>(sl_body);
+
+        if (m_sl_body_addr.has_value() && *m_sl_body_addr != a) {
+            ar.snap.reset();
+            ar.snap_bare = false;
+            ar.suppress = false;
+        }
+
+        m_sl_body_addr = a;
+    }
+
     // ---- Diagnose-Exporte (kein Live-Konsument, 1:1) ----
     if (ar.snap.has_value()) {
         re4vr::lua_set_number("__re4_ar_snap", *ar.snap);

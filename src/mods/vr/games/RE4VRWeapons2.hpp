@@ -192,6 +192,10 @@ private:
     void clone_manage();
     bool clone_spawn();
     void clone_destroy();
+    // [LH_CLONE RESET 20.09.2026] wie clone_destroy, aber OHNE
+    // destroy_game_object -- fuer den Fall, dass das alte GO nach
+    // Tod/Laden/Levelstart schon abgebaut ist.
+    void clone_forget();
     bool clone_isolate_part0();
     void clone_apply_pose();
     std::optional<int32_t> destroy_orphan_clones(::REManagedObject* keep);
@@ -288,7 +292,7 @@ private:
                                      float& dmg_out);
     void saved_vals_tick();
 
-    // Gespeicherte Messer-Schadenswerte (re4_vr/re4_knife_dmg.json).
+    // Gespeicherte Messer-Schadenswerte (re4_vr/re4_vr_knife_dmg.json).
     struct SavedVals {
         float damage{};
         float wince{};
@@ -309,6 +313,9 @@ private:
 
     std::optional<uintptr_t> m_di_body_addr{};
     double m_di_next_check{0.0};
+    // [LH_CLONE RESET 20.09.2026] Body war zwischendurch GANZ weg
+    // (Mercs-Levelstart / Tod / Laden) -- zaehlt wie ein Adress-Sprung.
+    bool m_di_body_weg{false};
 
     std::optional<int32_t> m_melee_combat{};
     bool m_melee_combat_looked_up{false};

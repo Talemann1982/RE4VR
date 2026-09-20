@@ -136,11 +136,7 @@ bool OverlayComponent::is_hand_valid(bool right) const {
 void OverlayComponent::update_panel_anchor() {
     auto& vr = VR::get();
 
-    // [ACHIEVEMENT 13.09.2026] Die Tafel beim ersten Fledermaus-Choke benutzt
-    // dieselbe Flaeche wie das Menue -- sie muss also genauso verankert werden,
-    // obwohl das Menue zu ist. Sonst faende sie keinen Anker und bliebe unsichtbar.
-    const bool ui_surface = g_framework->is_drawing_ui()
-                            || g_framework->is_achievement_overlay_active();
+    const bool ui_surface = g_framework->is_drawing_ui();
 
     // Menue zu -> beim naechsten Oeffnen neu vor den Kopf stellen.
     if (!ui_surface) {
@@ -434,9 +430,7 @@ void OverlayComponent::update_overlay() {
     // Solange das Menue offen ist, zeigt das Overlay das Rendertarget, sonst eine leere
     // Textur. Nicht HideOverlay: ein verstecktes Overlay muesste beim Oeffnen erst wieder
     // hochkommen, die leere Textur ist der ruhigere Weg.
-    // [ACHIEVEMENT 13.09.2026] Die Tafel zeigt dasselbe Rendertarget.
-    const auto drawing_ui = g_framework->is_drawing_ui()
-                            || g_framework->is_achievement_overlay_active();
+    const auto drawing_ui = g_framework->is_drawing_ui();
 
     if (is_d3d11) {
         auto rt = drawing_ui ? g_framework->get_rendertarget_d3d11() : g_framework->get_blank_rendertarget_d3d11();
@@ -497,8 +491,6 @@ void OverlayComponent::update_openxr() {
 
     // Der Layer wird nur angehaengt, solange das Menue offen ist -- D3D12Component kopiert
     // dann auch nur dann.
-    // [ACHIEVEMENT 13.09.2026] Auch fuer die Tafel anhaengen -- sonst kopiert
-    // D3D12Component das Rendertarget nicht in die Slate-Swapchain.
-    xr->ui_layer = g_framework->is_drawing_ui() || g_framework->is_achievement_overlay_active();
+    xr->ui_layer = g_framework->is_drawing_ui();
 }
 }

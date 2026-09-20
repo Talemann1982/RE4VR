@@ -945,6 +945,10 @@ private:
     std::optional<int32_t> m_round_seen{};
     void tick_merc_round();
 
+    // ---- Save-Load-Reset (Body-Adresse springt) -----------------------
+    std::optional<uintptr_t> m_sl_body{};
+    void tick_saveload_reset();
+
     // ---- Fuer die Hooks gespiegelte Lua-Globals -----------------------
     // isEnableFire und SoundContainer.trigger feuern sehr oft; ein Lua-Zugriff
     // pro Aufruf waere dutzendfaches Sperren des sol-States.

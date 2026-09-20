@@ -188,6 +188,10 @@ private:
     bool m_c_mag_hidden{false};
     int32_t m_c_mag_retained{0};
     bool m_c_reacquired{false};
+
+    // ---- Save-Load-Reset (Body-Adresse springt) -----------------------
+    std::optional<uintptr_t> m_sl_body{};
+    void tick_saveload_reset();
     bool m_c_rack_near{false};
     double m_c_mag_floor_at{0.0};
     std::optional<int32_t> m_c_prev_wid{};

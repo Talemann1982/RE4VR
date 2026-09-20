@@ -45,6 +45,7 @@
 #include "mods/vr/games/RE4VRKillswitch.hpp"
 #include "mods/vr/games/RE4VRBinding.hpp"
 #include "mods/vr/games/RE4VREquipLock.hpp"
+#include "mods/vr/games/RE4VRJiggle.hpp"
 #include "mods/vr/games/RE4VRWeapons.hpp"
 #include "mods/vr/games/RE4VRWeapons2.hpp"
 #include "mods/vr/games/RE4VRReload.hpp"
@@ -232,6 +233,8 @@ Mods::Mods() {
     m_mods.emplace_back(RE4VRWhitelist::get());
     m_mods.emplace_back(RE4VRObjects::get());
     m_mods.emplace_back(RE4VREquipLock::get());
+    // [JIGGLE 19.09.2026] Haende -> Ashleys Kopf/Stoff/Ketten (eigenstaendig).
+    m_mods.emplace_back(RE4VRJiggle::get());
     // [MOVEMENT ZULETZT] Vier unabhaengige Gruende (Spec-Nachtrag F):
     //  1. apply_lag_fix muss nach RE4VRFirstPerson::apply_movement_stabilization
     //  2. RE4VRHolster liest __re4_ub_z_delta (sah in Lua den Vorframe-Wert)

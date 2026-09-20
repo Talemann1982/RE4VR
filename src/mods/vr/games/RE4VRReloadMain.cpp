@@ -7311,6 +7311,20 @@ void RE4VRReloadMain::tick_saveload_guard() {
     m_lw_body_addr = a;
     m_live_wi = nullptr;
     re4vr::lua_set_nil("__re4_live_wi");
+
+    // [SAVE_LOAD-RESET 19.09.2026] Sonde re4_saveload_sonde: die Body-Adresse
+    // springt NUR bei Save-Load/Tod (0,77 s ohne Body davor), nie im Spiel.
+    // Die alte Waffe bleibt danach oft noch lesbar -> refresh_weapon sah keinen
+    // Grund zum Neuholen und wir arbeiteten weiter an der Leiche. tf wegwerfen
+    // zwingt den vorhandenen [SAVE_LOAD]-Zweig (m_weapon_reacquired); die
+    // Regale leeren wir hier selbst, damit das auch bei anderer Waffe greift.
+    m_pe_cache = nullptr;
+    m_wep.tf = nullptr;
+    m_mag_out_store.clear();
+    m_rack._needs_store.clear();
+    m_rack._gone_wid.reset();
+    m_rack._retained_store.clear();
+    m_mag_retained = 0;
 }
 
 // [RUNDEN-RESET] Neue Mercenaries-Runde -> Waffenzustand wegwerfen. Das Spiel

@@ -1092,8 +1092,14 @@ bool RE4VRCrosshair::ks_active() const {
         re4vr::call_cmd(ray_query, "set_FilterInfo", std::span<void*>(fa));
     }
 
+    // [INVOKE STATT CALL_SAFE 20.09.2026] Dieselbe Falle wie in RE4VRWeapons
+    // (PORTFIX 06.09., los_clear): call_safe legt die Argumente roh in die
+    // Register, bei den Physik-Casts passt das nicht -> c0000005 im Spielcode
+    // (re4.exe+0xEB2AC1). Der erste Wurf starb daran, danach meldete das
+    // Result nie "fertig" -- das Fadenkreuz hing seither auf dem festen
+    // Ersatzabstand 10 m. `invoke` ist der Weg, den Lua nimmt.
     try {
-        m_cast_ray_async->call_safe<void*>(sdk::get_thread_context(), phys, ray_query, ray_result);
+        m_cast_ray_async->invoke(phys, (void*)ray_query, (void*)ray_result);
     } catch (...) {
     }
 
@@ -1144,7 +1150,7 @@ void RE4VRCrosshair::update_crosshair_world_pos(const glm::vec3& start, const gl
     // ValueType-Rueckgaben selbst (crosshair.lua Z.294).
     // Exakt dieselbe Falle und derselbe Fix wie in RE4VRWeapons.cpp
     // (knife_read_ray) -- s. [[reference_re4_cpp_valuetype_rueckgabe_sret]].
-    // Feld-Offsets aus der TDB: Position 0x10, Normal 0x20, Distance 0x34.
+    // Die Feld-Offsets stehen zentral in RE4VR.hpp (re4vr::contact_point).
     // ========================================================================
     struct ContactData {
         bool ok{false};
@@ -1166,7 +1172,7 @@ void RE4VRCrosshair::update_crosshair_world_pos(const glm::vec3& start, const gl
         }
 
         struct alignas(16) ContactPointBuf {
-            uint8_t b[80];
+            uint8_t b[re4vr::contact_point::SIZE];
         };
 
         auto context = sdk::get_thread_context();
@@ -1186,11 +1192,11 @@ void RE4VRCrosshair::update_crosshair_world_pos(const glm::vec3& start, const gl
             return out;
         }
 
+        const auto* n = reinterpret_cast<const float*>(cpb.b + re4vr::contact_point::NORMAL);
+
         out.ok = true;
-        out.distance = *reinterpret_cast<const float*>(cpb.b + 0x34);
-        out.normal = glm::vec3{*reinterpret_cast<const float*>(cpb.b + 0x20),
-                               *reinterpret_cast<const float*>(cpb.b + 0x24),
-                               *reinterpret_cast<const float*>(cpb.b + 0x28)};
+        out.distance = *reinterpret_cast<const float*>(cpb.b + re4vr::contact_point::DISTANCE);
+        out.normal = glm::vec3{n[0], n[1], n[2]};
         return out;
     };
 

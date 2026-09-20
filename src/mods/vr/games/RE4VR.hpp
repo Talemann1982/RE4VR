@@ -694,6 +694,21 @@ void destroy_game_object(::REManagedObject* go);
 // festes get_data<int32_t> liest bei einem Byte-Enum drei Nachbarwerte mit.
 // [PORTFIX 2026-09-06] ValueType-Getter (via.vec3 / via.Quaternion) ueber
 // einen 16-Byte-ausgerichteten sret-Puffer. NIE try_call<glm::vec3> dafuer.
+// [CONTACTPOINT 20.09.2026 -- gemessen, zzz_re4_contact_sonde]
+// via.physics.ContactPoint ist ein ValueType von 64 Byte. Ein sret-Puffer
+// enthaelt die ROHE Struct, es gelten also die fieldptr-Offsets der TDB (ohne
+// Objektkopf) -- NICHT die base-Offsets, die 0x10 groesser sind. Wer base
+// nimmt, liest bei 0x34 den mUserDataPtr statt der Distanz: genau das liess
+// das Fadenkreuz auf festem Abstand kleben und lieferte dem Messer nie eine
+// Trefferdistanz.
+namespace contact_point {
+constexpr size_t SIZE     = 64;
+constexpr size_t POSITION = 0x00;   // via.vec3
+constexpr size_t NORMAL   = 0x10;   // via.vec3
+constexpr size_t TIME     = 0x20;   // float TimeOfImpact
+constexpr size_t DISTANCE = 0x24;   // float
+}   // namespace contact_point
+
 bool obj_get_vec4(::REManagedObject* obj, std::string_view name, glm::vec4& out);
 bool obj_get_vec3(::REManagedObject* obj, std::string_view name, glm::vec3& out);
 bool obj_get_quat(::REManagedObject* obj, std::string_view name, glm::quat& out);
@@ -850,17 +865,19 @@ void ashley_reply_res_name(bool fuck, int index, char* out, size_t out_size);
 // aber ueber ihre acht Dateien und ohne Skip-Liste.
 int ashley_wav_next(std::vector<int>& bag, int* last = nullptr);
 
-// [ACHIEVEMENT 13.09.2026] Der Jingle zur Achievement-Tafel (Resource ACHIEVE01).
-// Bewusst KEIN Taunt-Index: so zieht ihn weder der Tiergriff-Beutel noch eine
-// Geste. Lautstaerke ist derselbe dB-Regler wie bei allen eigenen WAVs.
-bool play_achievement_wav();
-
 // Lautstaerke der eigenen WAVs in dB, 0 = Datei unveraendert, geklemmt auf
 // -40..+12. Gilt fuer BEIDE Verwender (Tiergriff und Mittelfinger-Geste) --
 // gestellt wird er ueber den Regler in der Choke-UI und liegt in der
 // Choke-JSON. Umgesetzt wird er, indem die Samples vor dem Abspielen skaliert
 // und per SND_MEMORY gespielt werden; PlaySound selbst kennt keine Lautstaerke,
 // und am Session-Volume zu drehen wuerde den ganzen Spielton mitnehmen.
+// [JIGGLE 19.09.2026] Klatscher beim Kopf-Schubs (ASHLEYSLAP01..03), globaler dB-Regler.
+constexpr int SLAP_WAV_COUNT = 3;
+bool play_slap_wav(int index, float db);
+
+// [WAV-SERIE 20.09.2026] Nummer des zuletzt gestarteten eigenen WAVs.
+uint64_t wav_serial();
+
 void  set_taunt_wav_gain_db(float db);
 float taunt_wav_gain_db();
 

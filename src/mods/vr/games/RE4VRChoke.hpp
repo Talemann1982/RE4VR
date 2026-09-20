@@ -80,6 +80,20 @@ public:
     // Crosshair, binding.lua und reload.lua rufen es) und intern direkt benutzt.
     bool is_choking() const;
 
+    // [JIGGLE 20.09.2026] Haelt der Griff gerade jemanden? REIN NATIV -- der
+    // Herzschlag __re4_choke_seen laeuft ueber den Lua-State und ist aus
+    // fremden Hooks nicht verlaesslich lesbar.
+    bool is_holding() const;
+
+    // [JIGGLE 20.09.2026] Wann hat der Choke ZULETZT eine Stimme von Ashley
+    // gestartet -- egal ob Spielzeile oder eigenes WAV? Der Slap fragt hier
+    // nach und laesst seinen Spruch dann weg, damit nie zwei reden.
+    double last_ashley_voice() const { return m_ashley_voice_t; }
+
+    // Hat der AKTUELLE Griff eine Stimme von ihr ausgeloest? Der Slap fragt das
+    // ab: wenn ja, sagt sie nach dem Schlag nichts mehr.
+    bool ashley_spoke_this_hold() const { return m_ashley_spoke_hold; }
+
     // [WIEDERVERWENDUNG] _G.__re4_blade_tip -- re4_vr_weapons.lua braucht fuer
     // seinen Messerwurf dieselbe selbstgemessene Klingenlaenge. Rueckgabe wie
     // im Original: Spitze, Einheitsvektor der Klinge, Laenge.
@@ -577,6 +591,11 @@ private:
 public:
     void ashley_reply(bool fuck);
 
+    // [JIGGLE 19.09.2026] Antwort von aussen (RE4VRJiggle, nach einem Klaps):
+    // spielt den Spruch und laesst den Mund per Huellkurve mitlaufen --
+    // derselbe Mund-Weg wie bei ashley_reply, ohne dessen Bedingungen.
+    void play_reply_with_mouth(bool fuck, int idx, float db);
+
 private:
     // Spielt die wartende Antwort, sobald ihre Zeit da ist (aus on_frame).
     void reply_tick();
@@ -594,6 +613,8 @@ private:
     int    m_mouth_kind{0};
 
     int    m_mouth_wav{-1};
+    // Zu welchem gestarteten WAV gehoert die laufende Mundbewegung?
+    uint64_t m_mouth_serial{0};
     double m_mouth_t0{0.0};
 
     // Huellkurve je WAV-Index, beim ersten Abspielen aus der Resource gerechnet.
@@ -657,14 +678,10 @@ private:
     ::REManagedObject* pick_animal(const glm::vec3& hp, float max_d, int* species_out,
                                    bool* chicken_out);
 
-    // [ASHLEY 13.09.2026] Die Begleitung als Ziel -- nur wenn das Achievement
-    // schon freigeschaltet ist (achievement_unlocked). Sie steht NICHT in der
+    // [ASHLEY 13.09.2026] Die Begleitung als Ziel. Sie steht NICHT in der
     // EnemyContextList, sondern allein in der PartnerContextList.
+    // [20.09.2026] Immer greifbar -- die Achievement-Sperre ist ausgebaut.
     ::REManagedObject* pick_ashley(const glm::vec3& hp);
-
-    // Ist "WHAT A BAT JOKE" freigeschaltet? Liest die JSON EINMAL pro
-    // Spielstart -- danach steht die Antwort in m_achievement_seen.
-    bool achievement_unlocked();
 
     // [TIER-MITTE 2026-09-12] Mittelpunkt der Welt-AABB des Tier-Meshes.
     // Damit findet der Steckpunkt bei JEDEM Tier die Koerpermitte, ohne dass
@@ -785,43 +802,15 @@ private:
 
     // Shuffle-Beutel ueber ASHLEY_CHOKE_LINES2 (Indizes, nicht IDs) --
     // m_ashley_line_last verhindert an der Beutelgrenze die Wiederholung.
+    double m_ashley_voice_t{-999.0};
+    bool m_ashley_spoke_hold{false};
+    // [SHUFFLE 20.09.2026] Nur bei jedem 3. bis 4. Griff sagt sie ueberhaupt
+    // etwas -- vorher kam bei JEDEM Griff eine Zeile.
+    int m_ashley_voice_grabs{0};
+    int m_ashley_voice_next{3};
     std::vector<int> m_ashley_line_bag{};
     int m_ashley_line_last{-1};
 
-    // ========================================================================
-    // [ACHIEVEMENT 13.09.2026] "WHAT A BAT JOKE" -- die Tafel zur ERSTEN
-    // gegriffenen Fledermaus. Gemerkt wird das in einer eigenen JSON
-    // (re4_vr/re4_vr_achievement.json): fehlt der Schluessel, steht sie noch aus.
-    // Eigene Datei, weil re4_vr_splash.json beim Schreiben ganz ueberschrieben
-    // wird (RE4VRMenu::splash_tick) -- ein zweiter Schluessel darin waere weg.
-    // ========================================================================
-    // Faelligkeit der Tafel (Zeitstempel wie m_taunt_due, 0 = nichts steht an).
-    double m_achievement_due{0.0};
-    // Schon einmal gezeigt? Nur EINMAL pro Spielstart von der Platte gelesen.
-    bool m_achievement_seen{false};
-    bool m_achievement_checked{false};
-    // [TEST 13.09.2026] Merker fuer die einmalige Testanzeige beim Start.
-    bool m_achievement_test_armed{false};
-
-    // Erste gegriffene Fledermaus: merken und die Tafel anstellen.
-    void achievement_arm();
-
-    // [ASHLEY-MESSER 15.09.2026] Ein Stich in die gehaltene Begleitung. Zaehlt
-    // ueber Spielstarts hinweg (re4_vr_achievement2.json) und stellt beim
-    // dritten die zweite Tafel an.
-    void ashley_stab();
-
-    // Steht das zweite Achievement (drittes Messer in Ashley)?
-    bool reply_unlocked();
-
-    // -1 = noch nicht aus der Datei gelesen.
-    int32_t m_ashley_stabs{-1};
-
-    bool m_snake_checked{false};
-    bool m_snake_unlocked{false};
-
-    // Welche Tafel als naechstes gezeigt wird: 1 = Fledermaus, 2 = drei Messer.
-    int32_t m_achievement_which{1};
     double m_last_parry{-99.0};
     std::optional<uintptr_t> m_parry_victim{};
 

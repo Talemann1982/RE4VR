@@ -7944,14 +7944,11 @@ std::optional<int32_t> RE4VRReload2::bow_loaded_ammo() {
 }
 
 // Mesh der gefuehrten Waffe (dieselbe Kette wie der Parts-Klon: EquipWeapon -> get_Mesh).
+// [IMMER FRISCH 19.09.2026] Kein Cache mehr: nach Tod/Save-Load war das gemerkte
+// Mesh freigegeben, und schon die Probe-Abfrage darauf (getPartsEnableCount)
+// war der Absturz -- beim "Reset Scripts" in bow_on_script_reset. Drei Aufrufe
+// pro Pass sind billiger als eine Leiche.
 ::REManagedObject* RE4VRReload2::bow_weapon_mesh() {
-    int32_t cnt = 0;
-
-    if (m_bow_st.mesh != nullptr
-        && re4vr::try_call<int32_t>(m_bow_st.mesh, "getPartsEnableCount", cnt)) {
-        return m_bow_st.mesh;
-    }
-
     auto* hu = re4vr::call_safe<::REManagedObject*>(get_ctx(), "get_HeadUpdater");
     auto* g = re4vr::call_safe<::REManagedObject*>(hu, "get_EquipWeapon");
     m_bow_st.mesh = re4vr::call_safe<::REManagedObject*>(g, "get_Mesh");
@@ -10912,6 +10909,7 @@ void RE4VRReload2::on_frame() {
 
     ensure_public_ui_registered();
     tick_merc_round();
+    tick_saveload_reset();
 
     rev_on_frame();
     rifle_on_frame();
@@ -10929,6 +10927,35 @@ void RE4VRReload2::on_frame() {
 // ansprechbar (Schreiben verpufft lautlos).
 // TRIGGER: __re4_merc_round -- merc zaehlt es in der Ladeluecke hoch, in der der
 // Body kurz gar nichts meldet. Ausserhalb Mercenaries aendert sich der Token nie.
+// [SAVE_LOAD-RESET 19.09.2026] Sonde re4_saveload_sonde: die Body-Adresse
+// springt NUR bei Save-Load/Tod (0,77 s ohne Body davor), nie im Spiel. Die
+// alte Waffe bleibt danach oft noch lesbar -> der tf-Test im Refresh sah keinen
+// Grund zum Neuholen. tf wegwerfen zwingt den vorhandenen [SAVE_LOAD]-Zweig.
+void RE4VRReload2::tick_saveload_reset() {
+    auto* body = re4vr::fc::body_go();
+
+    if (body == nullptr) {
+        return;
+    }
+
+    const auto a = reinterpret_cast<uintptr_t>(body);
+
+    if (!m_sl_body.has_value()) {
+        m_sl_body = a;
+
+        return;
+    }
+
+    if (a == *m_sl_body) {
+        return;
+    }
+
+    m_sl_body = a;
+    m_pe_cache = nullptr;
+    m_rifwep.tf = nullptr;
+    m_bwep.tf = nullptr;
+}
+
 void RE4VRReload2::tick_merc_round() {
     const auto t = re4vr::lua_get_number_opt("__re4_merc_round");
     const auto v = t.has_value() ? std::optional<int32_t>{static_cast<int32_t>(*t)}

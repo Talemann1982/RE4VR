@@ -52,11 +52,6 @@ TAUNT39 WAVE "sounds/taunt39_adaleon.wav"
 TAUNT40 WAVE "sounds/taunt40_adaamber.wav"
 TAUNT41 WAVE "sounds/taunt41_adaboobs.wav"
 
-// [ACHIEVEMENT 13.09.2026] Kein Taunt -- der Jingle zur Achievement-Tafel beim
-// ERSTEN Fledermaus-Choke. Steht bewusst NICHT in TAUNT_WAV_NAMES, damit ihn
-// weder der Tiergriff-Beutel noch eine Geste aus TAUNT_TABLE ziehen kann.
-ACHIEVE01 WAVE "sounds/achievement01.wav"
-
 // [ASHLEY 13.09.2026] Ihre eigenen Sprueche beim Choke. Eigener Namensraum,
 // damit weder der Tiergriff-Beutel noch eine Geste sie ziehen kann.
 ASHLEY01 WAVE "sounds/ashley01_howyoulike.wav"
@@ -99,3 +94,9 @@ ASHLEYFUCK06 WAVE "sounds/ashleyfuck06_dontwanttogohome.wav"
 // [17.09.2026]
 ASHLEYFUCK07 WAVE "sounds/ashleyfuck07_justfarted.wav"
 ASHLEYFUCK08 WAVE "sounds/ashleyfuck08_smellyour.wav"
+
+// [JIGGLE 19.09.2026] Klatscher beim Kopf-Schubs (RE4VRJiggle). Eigener
+// Namensraum, steht in keinem Beutel der anderen Verwender.
+ASHLEYSLAP01 WAVE "sounds/ashleyslap01.wav"
+ASHLEYSLAP02 WAVE "sounds/ashleyslap02.wav"
+ASHLEYSLAP03 WAVE "sounds/ashleyslap03.wav"

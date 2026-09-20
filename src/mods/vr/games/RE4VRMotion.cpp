@@ -1561,7 +1561,14 @@ std::string RE4VRMotion::char_now() {
     // nichts". Bewusst derselbe Wert "ada" -- das Tuning gilt in beiden Modi.
     if (n == "ch3a8z0_body" || n == "ch3a8z0_MC_body") {
         c = "ada";
-    } else if (n == "ch0a0z0_body" || n == "ch0a1z0_body") {
+    // [LEON_MERCS_BODY 20.09.2026] In Mercenaries heisst Leons Body
+    // "ch6i0z0_body" (KindID 600000, auch Leon2) -- ohne diese Zeile lieferte
+    // char_now() dort LEER, lh_char_tick stieg aus ("unbekannt -> NICHT
+    // umschalten") und m_lh_off blieb leer: clone_apply_pose setzte das linke
+    // Messer auf LocalPosition(0,0,0)+Identity, also nackt aufs Handgelenk.
+    // Sichtbar nur beim DIREKTEN Start in Mercs -- aus der Kampagne kommend
+    // stand die geladene Map noch im Speicher.
+    } else if (n == "ch0a0z0_body" || n == "ch0a1z0_body" || n == "ch6i0z0_body") {
         c = "leon";
     }
 
@@ -1735,7 +1742,28 @@ std::string RE4VRMotion::knife_wep_key(int32_t wid) {
         // 0,027) statt auf dem eingestellten Offset (0,094) -- und zwar bei
         // identischer Kalibrierung, identischem Key und ohne Mercs-Hook. Statt
         // weiter nach der Quelle zu suchen, wird dieser Fall getrennt eingestellt.
-        return m_knife_after_throw ? (base + "@krauser_throw") : (base + "@krauser");
+        const std::string nkey = base + (m_knife_after_throw ? "@krauser_throw" : "@krauser");
+
+        // [KNIFE_FLIP_OFFSET 18.09.2026] Geflippt sass das Messer in beiden
+        // Faellen (frisch aus dem Holster UND nach einem Wurf) nicht ganz richtig
+        // -> je ein eigener Flip-Satz. Beim ersten Mal mit der Drehung des
+        // ungeflippten Satzes angelegt, damit die Lage exakt die bisherige ist
+        // und von dort aus eingestellt wird.
+        if (m_knife_flip.lerp > 0.5f) {
+            const std::string fkey = base + (m_knife_after_throw ? "@krauser_throw_flip" : "@krauser_flip");
+
+            if (m_weapon_offset.find(fkey) == m_weapon_offset.end()) {
+                const auto& n = get_weapon_offset(nkey);
+                auto& f = get_weapon_offset(fkey);
+                f.rx = n.rx;
+                f.ry = n.ry;
+                f.rz = n.rz;
+            }
+
+            return fkey;
+        }
+
+        return nkey;
     }
 
     return base;
@@ -2711,9 +2739,15 @@ void RE4VRMotion::attach_weapon() {
         // ausschliesslich fuer Ada und (seit 17.09.) Krauser gesetzt; fuer Leon
         // ist das exakt ein No-Op.
         if (!is_left && frame_rot.has_value() && kid.has_value() && is_knife_rel_split_id(*kid)) {
-            const auto& ko = get_weapon_offset(knife_wep_key(*kid));
+            const std::string kkey = knife_wep_key(*kid);
+            const auto& ko = get_weapon_offset(kkey);
 
-            if (ko.px != 0.0f || ko.py != 0.0f || ko.pz != 0.0f) {
+            // [KNIFE_FLIP_OFFSET 18.09.2026] Krausers Flip-Satz gilt NUR geflippt
+            // -- seine Position wird deshalb nicht herausgerechnet, sonst waeren
+            // seine Positions-Slider wirkungslos.
+            const bool own_flip_set = kkey.ends_with("@krauser_flip") || kkey.ends_with("@krauser_throw_flip");
+
+            if (!own_flip_set && (ko.px != 0.0f || ko.py != 0.0f || ko.pz != 0.0f)) {
                 const float l = m_knife_flip.lerp;
                 ox -= ko.px * l;
                 oy -= ko.py * l;
@@ -7558,6 +7592,26 @@ void RE4VRMotion::draw_public_headset() {
     ImGui::TextColored(REFramework::MENU_CHECKMARK_COLOR, "  Controller:");
     ImGui::SameLine();
     ImGui::TextUnformatted(m_selected_controller.c_str());
+
+    // [RECENTER 20.09.2026] Kopien der beiden Knoepfe aus dem VR-Tree, der im
+    // Public-UI ausgeblendet ist (VR.cpp:5042/5046) -- dieselben Aufrufe, hier
+    // nebeneinander direkt unter Runtime/Controller. Ohne geladene Runtime
+    // zeichnen sie nichts (wie VR::draw_recenter_button).
+    if (auto& vr = VR::get(); vr != nullptr && vr->get_runtime() != nullptr
+        && vr->get_runtime()->loaded) {
+        ImGui::Dummy(ImVec2(0.0f, g_framework->menu_px(6.0f)));
+
+        if (ImGui::Button("Recenter View")) {
+            vr->recenter_view();
+        }
+
+        ImGui::SameLine(0.0f, g_framework->menu_px(REFramework::MENU_BUTTON_GAP));
+
+        if (ImGui::Button("Set Standing Origin")) {
+            vr->set_standing_origin(vr->get_position(0));
+        }
+    }
+
     g_framework->draw_menu_heading("Select Headset", true);   // [UEBERSCHRIFT 11.09.2026] war orangerot, linksbuendig
 
     struct Opt {
@@ -8318,7 +8372,7 @@ void RE4VRMotion::draw_dev_ui() {
             // POSITIONS-Anteil dieser Slider bewusst herausgerechnet
             // ([FLIP_ENTKOPPELT]) -- dann tunt man die Lage ueber den
             // Flip-Griff-Offset im Messer-Tree. Die ROTATION wirkt immer.
-            if (m_knife_flip.lerp > 0.5f) {
+            if (m_knife_flip.lerp > 0.5f && !kkey.ends_with("_flip")) {
                 ImGui::TextColored(col_abgr(0xFFFFAA00),
                                    "Flip-Lerp %.3f -> POS hier wirkungslos, Lage ueber 'Flip "
                                    "Griff-Offset' tunen. ROT wirkt.",
@@ -8361,9 +8415,35 @@ void RE4VRMotion::draw_dev_ui() {
                     ImGui::TreePop();
                 }
 
-                ImGui::TextColored(col_abgr(m_knife_after_throw ? 0xFF44FF44 : 0xFF88CCFF), "%s",
-                                   m_knife_after_throw ? "   gerade aktiv: Nach Wurf"
-                                                       : "   gerade aktiv: Normal");
+                if (ImGui::TreeNode("Geflippt aus Holster")) {
+                    auto& o = get_weapon_offset(kbase + "@krauser_flip");
+                    draw_offset_sliders("Geflippt", o);
+
+                    if (ImGui::Button("Reset Geflippt to 0")) {
+                        o = WeaponOffset{};
+                        save_config();
+                    }
+
+                    ImGui::TreePop();
+                }
+
+                if (ImGui::TreeNode("Geflippt nach Wurf")) {
+                    auto& o = get_weapon_offset(kbase + "@krauser_throw_flip");
+                    draw_offset_sliders("Geflippt nach Wurf", o);
+
+                    if (ImGui::Button("Reset Geflippt nach Wurf to 0")) {
+                        o = WeaponOffset{};
+                        save_config();
+                    }
+
+                    ImGui::TreePop();
+                }
+
+                const bool flip_set = kkey.ends_with("_flip");
+                const char* aktiv = m_knife_after_throw
+                                        ? (flip_set ? "   gerade aktiv: Geflippt nach Wurf" : "   gerade aktiv: Nach Wurf")
+                                        : (flip_set ? "   gerade aktiv: Geflippt aus Holster" : "   gerade aktiv: Normal");
+                ImGui::TextColored(col_abgr((m_knife_after_throw || flip_set) ? 0xFF44FF44 : 0xFF88CCFF), "%s", aktiv);
             } else {
                 auto& koff = get_weapon_offset(kkey);
                 draw_offset_sliders("Messer-Wpn", koff);
