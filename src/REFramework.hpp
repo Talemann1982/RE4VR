@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <mutex>
 #include <optional>
@@ -237,6 +238,34 @@ public:
 
     // [LOGO-GROESSE 25.09.2026] Logo links oben, je Zeile ein Faktor auf die
     // Kategorie-Schrift: "RESIDENT EVIL 4" und "VR".
+    // [GAME_LOGO_VR 26.09.2026 -- Ansage des Users] Solange das Spiel Gui_ui1001 zeichnet
+    // (RE4VRUi meldet das jeden Frame), zeigt die VR-Menuetafel bei GESCHLOSSENEM Menue nur
+    // "VR" in re4-title -- ohne Fenster, Rahmen oder Eingabe. Kommt keine Meldung mehr
+    // (200 ms), ist es weg. Lage/Groesse: x/y = Mitte auf der Tafel (0..1), scale auf die
+    // Schriftgroesse der VR-Ueberschriften.
+    void request_vr_game_logo() {
+        m_vr_game_logo_t = std::chrono::steady_clock::now().time_since_epoch().count();
+    }
+
+    bool is_vr_game_logo_active() const {
+        const auto t = m_vr_game_logo_t.load();
+
+        if (t == 0) {
+            return false;
+        }
+
+        const auto window = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::milliseconds{200}).count();
+
+        return (std::chrono::steady_clock::now().time_since_epoch().count() - t) < window;
+    }
+
+    void set_vr_game_logo_layout(float x, float y, float scale) {
+        m_vr_game_logo_x = x;
+        m_vr_game_logo_y = y;
+        m_vr_game_logo_scale = scale;
+    }
+
     float get_vr_menu_logo_top_scale() const { return m_vr_menu_logo_top_scale; }
     float get_vr_menu_logo_vr_scale() const { return m_vr_menu_logo_vr_scale; }
     void set_vr_menu_logo_top_scale(float scale) { m_vr_menu_logo_top_scale = std::clamp(scale, 0.3f, 2.0f); }
@@ -248,6 +277,9 @@ public:
     float get_vr_menu_logo_nav_gap() const { return m_vr_menu_logo_nav_gap; }
     void set_vr_menu_logo_vr_gap(float v) { m_vr_menu_logo_vr_gap = std::clamp(v, -1.0f, 1.0f); }
     void set_vr_menu_logo_nav_gap(float v) { m_vr_menu_logo_nav_gap = std::clamp(v, -1.0f, 2.0f); }
+    // [LOGO-OBEN 26.09.2026] Abstand Logo -> oberer Rand in Kategorie-Zeilen (0.5 = alter Stand).
+    float get_vr_menu_logo_top_gap() const { return m_vr_menu_logo_top_gap; }
+    void set_vr_menu_logo_top_gap(float v) { m_vr_menu_logo_top_gap = std::clamp(v, -1.0f, 2.0f); }
 
     // [STICK-DEADZONE 11.09.2026] Ab welchem Ausschlag die Sticks im VR-Menue
     // navigieren, scrollen und Slider verstellen (0..1). Frueher fest 0.55.
@@ -456,6 +488,13 @@ private:
     float m_vr_menu_logo_vr_scale{1.0f};
     float m_vr_menu_logo_vr_gap{-0.35f};   // [LOGO-ABSTAND]
     float m_vr_menu_logo_nav_gap{0.25f};   // [LOGO-ABSTAND]
+    float m_vr_menu_logo_top_gap{0.5f};    // [LOGO-OBEN] 0.5 = bisher
+    // [GAME_LOGO_VR]
+    std::atomic<int64_t> m_vr_game_logo_t{0};
+    float m_vr_game_logo_x{0.5f};
+    float m_vr_game_logo_y{0.5f};
+    float m_vr_game_logo_scale{2.0f};
+    void run_vr_game_logo_frame();
     float m_vr_menu_stick_deadzone{0.7f};   // [STICK-DEADZONE] war fest 0.55 -- zu empfindlich
     float m_vr_menu_nav_rounding{5.0f};     // [KATEGORIE-RUNDUNG] = bisheriges FrameRounding
     float m_vr_menu_repeat_delay{0.45f};    // [STICK-WIEDERHOLUNG] Sekunden bis zur ersten Wiederholung

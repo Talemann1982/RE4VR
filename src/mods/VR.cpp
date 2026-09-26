@@ -1761,6 +1761,7 @@ void VR::update_hmd_state() {
         std::unique_lock _{ runtime->pose_mtx };
         set_rotation_offset(glm::identity<glm::quat>());
         m_standing_origin = get_position_unsafe(vr::k_unTrackedDeviceIndex_Hmd);
+        request_flatscreen_reanchor();   // [CANVAS_RECENTER] Runtime-Recenter
 
         runtime->wants_reset_origin = false;
     }
@@ -1873,6 +1874,16 @@ void VR::update_camera() {
     REF_PROFILE_FUNCTION();
 
     if (!is_hmd_active()) {
+        m_needs_camera_restore = false;
+        return;
+    }
+
+    // [CANVAS_KOPF + CANVAS_FOV 26.09.2026] Leinwand/Suspend: die Kamera bleibt komplett die des
+    // Spiels -- keine Kopfpose in Joint 0 (sonst steuert das Headset die Cutscene-Kamera) und
+    // auch KEIN FOV/Seitenverhaeltnis vom Headset. Belegt (zzz_re4_cut2d_kamera_sonde): FOV stand
+    // waehrend der Leinwand auf 109,3 (Index) statt 26/36 (Cutscene) -> falscher Bildausschnitt.
+    // Ohne Write auch kein Restore.
+    if (should_suspend_camera_overrides()) {
         m_needs_camera_restore = false;
         return;
     }
@@ -2671,6 +2682,7 @@ void VR::recenter_view() {
     const auto new_rotation_offset = glm::normalize(glm::inverse(utility::math::flatten(glm::quat{get_rotation(0)})));
 
     set_rotation_offset(new_rotation_offset);
+    request_flatscreen_reanchor();   // [CANVAS_RECENTER]
 }
 
 glm::quat VR::get_gui_rotation_offset() {

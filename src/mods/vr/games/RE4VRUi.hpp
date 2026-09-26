@@ -49,6 +49,7 @@ public:
 
     void on_frame() override;
     void draw_dev_ui();   // frueher on_draw_ui (s. RE4VRMenu)
+    void draw_public_2d_cutscenes();   // [CUT2D] "Enable 2D Cutscenes" (MOD OPTIONS)
 
     bool on_pre_gui_draw_element(::REComponent* element, void* context) override;
 
@@ -91,7 +92,19 @@ private:
         bool suspend{false};     // [2026-08-10] getestet, bringt nichts
         bool binoglue{false};
         bool mapglue{false};
+        // [CUT2D 26.09.2026] Echte Cutscenes auf der Flatscreen-Leinwand. Default AN (User 26.09.,
+        // gilt, wenn die JSON den Schluessel nicht hat); aus = kein einziger zusaetzlicher Aufruf,
+        // der Canvas-Zustand bleibt dann bitgleich zum bisherigen Stand.
+        bool cutscene_2d{true};
     } m_opt{};
+
+    bool m_cut2d_active{false};   // [CUT2D] Leinwand gerade wegen einer Cutscene an
+    // [CUT2D_KICK 26.09.2026] Kurz nach Cutscene-Start die Leinwand 2 Frames aus und wieder an.
+    // Belegt vom User: in 2D ist die Cutscene sonst reingezoomt, Aus/An (bzw. Reset Scripts) heilt.
+    double m_cut2d_kick_at{0.0};   // 0 = nichts geplant
+    int m_cut2d_kick_frames{0};    // > 0 = Leinwand gerade fuer den Kick aus
+    bool cut2d_show() const { return m_cut2d_active && m_cut2d_kick_frames == 0; }
+    void cutscene_2d_tick();
 
     float m_glue_distance{1.5f};
     // Bei exakt 0 liegen alle Ebenen ineinander, dann entscheidet die
@@ -100,6 +113,23 @@ private:
     float m_canvas_width{2.5f};
     float m_canvas_distance{2.0f};
     float m_ui3101_scale{1.0f};
+
+    // [CUT2D_UI0200 26.09.2026 -- Ansage des Users] Gui_ui0200 (Position + Groesse) NUR solange die
+    // Cutscene-Leinwand laeuft (m_cut2d_active). Sonst wird Gui_ui0200 nicht angefasst; beim Ende
+    // der Cutscene kommt der gemerkte Originalstand zurueck.
+    float m_cut_ui0200_x{0.0f};
+    float m_cut_ui0200_y{0.0f};
+    float m_cut_ui0200_scale{1.0f};
+    bool m_cut_ui0200_applied{false};
+    ::REManagedObject* m_cut_ui0200_ctrl{nullptr};
+    glm::vec3 m_cut_ui0200_orig_pos{};
+    glm::vec3 m_cut_ui0200_orig_scale{1.0f, 1.0f, 1.0f};
+    void cut_ui0200_apply(::REManagedObject* go);
+
+    // [GAME_LOGO_VR 26.09.2026] "VR" auf der VR-Menuetafel, solange das Spiel Gui_ui1001 zeigt.
+    float m_game_logo_x{0.5f};
+    float m_game_logo_y{0.5f};
+    float m_game_logo_scale{2.0f};
     // Unser Default; der Fork-Default waere -35.0.
     float m_ptr_pitch{-45.0f};
 

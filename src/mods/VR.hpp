@@ -355,6 +355,16 @@ public:
         m_flatscreen_overlay_width = width;
     }
 
+    // [CANVAS_RECENTER 26.09.2026] Die raumfeste Leinwand stellt sich bei jedem Recenter neu vor
+    // den Kopf (Recenter-Knopf/-Taste und das Recenter-Signal der Runtime).
+    void request_flatscreen_reanchor() {
+        m_flatscreen_reanchor = true;
+    }
+
+    bool consume_flatscreen_reanchor() {
+        return m_flatscreen_reanchor.exchange(false);
+    }
+
     // Distance of the canvas in front of the head, in meters.
     float get_flatscreen_overlay_distance() const {
         return m_flatscreen_overlay_distance;
@@ -1252,6 +1262,7 @@ private:
     bool m_flatscreen_overlay{false};          // show the frame as a flat quad instead of stereo
     float m_flatscreen_overlay_width{2.5f};    // meters
     float m_flatscreen_overlay_distance{2.0f}; // meters in front of the head
+    std::atomic<bool> m_flatscreen_reanchor{false}; // [CANVAS_RECENTER]
 
     bool m_vr_suspended{false};                // park every engine override, see is_vr_suspended()
     bool m_map_face_glue{false};               // RE4 map layers head-locked, see is_map_face_glue()

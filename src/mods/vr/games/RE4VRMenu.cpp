@@ -104,6 +104,10 @@ void RE4VRMenu::load_menu_editor_cfg() {
             g_framework->set_vr_menu_logo_vr_scale(j["vr_logo_vr_scale"].get<float>());
         }
 
+        if (j.contains("vr_logo_top_gap") && j["vr_logo_top_gap"].is_number()) {
+            g_framework->set_vr_menu_logo_top_gap(j["vr_logo_top_gap"].get<float>());
+        }
+
         if (j.contains("vr_logo_vr_gap") && j["vr_logo_vr_gap"].is_number()) {
             g_framework->set_vr_menu_logo_vr_gap(j["vr_logo_vr_gap"].get<float>());
         }
@@ -156,6 +160,7 @@ void RE4VRMenu::save_menu_editor_cfg() {
         j["vr_content_text_scale"] = g_framework->get_vr_menu_detail_text_scale();
         j["vr_logo_top_scale"] = g_framework->get_vr_menu_logo_top_scale();
         j["vr_logo_vr_scale"] = g_framework->get_vr_menu_logo_vr_scale();
+        j["vr_logo_top_gap"] = g_framework->get_vr_menu_logo_top_gap();
         j["vr_logo_vr_gap"] = g_framework->get_vr_menu_logo_vr_gap();
         j["vr_logo_nav_gap"] = g_framework->get_vr_menu_logo_nav_gap();
         j["vr_stick_deadzone"] = g_framework->get_vr_menu_stick_deadzone();
@@ -660,6 +665,7 @@ void RE4VRMenu::draw_public() {
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, g_framework->menu_px(8.0f)));
     draw_public_toxic_settings();                       // Disable Toxic Gamesettings (erster Schalter)
     RE4VRKillswitch::get()->draw_public_ui();           // Enable Firstperson Events
+    RE4VRUi::get()->draw_public_2d_cutscenes();         // [CUT2D] Enable 2D Cutscenes
     RE4VRWeapons::get()->draw_public_assist_light();    // Disable Assist Light
     RE4VRBinding::get()->draw_public_ui();              // 180 Grad, Snapturn, Roomscale
     ImGui::PopStyleVar();
@@ -728,6 +734,17 @@ void RE4VRMenu::draw_menu_editor() {
 
         if (ImGui::SliderFloat("Logo VR Size", &logo_vr, 0.3f, 2.0f, "%.2f")) {
             g_framework->set_vr_menu_logo_vr_scale(logo_vr);
+        }
+
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            save_menu_editor_cfg();
+        }
+
+        // [LOGO-OBEN 26.09.2026]
+        float logo_top_gap = g_framework->get_vr_menu_logo_top_gap();
+
+        if (ImGui::SliderFloat("Logo Top Gap", &logo_top_gap, -1.0f, 2.0f, "%.2f")) {
+            g_framework->set_vr_menu_logo_top_gap(logo_top_gap);
         }
 
         if (ImGui::IsItemDeactivatedAfterEdit()) {

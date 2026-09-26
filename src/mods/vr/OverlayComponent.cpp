@@ -138,6 +138,29 @@ void OverlayComponent::update_panel_anchor() {
 
     const bool ui_surface = g_framework->is_drawing_ui();
 
+    // [GAME_LOGO_VR 26.09.2026] Logo-Anker: gesetzt, sobald das "VR" gebraucht wird (auch
+    // wenn das Menue noch nie offen war), geloescht erst, wenn Gui_ui1001 weg ist. Gleiche
+    // Rechnung wie beim Menue-Anker unten: nur Yaw, Mitte auf Augenhoehe, Menue-Abstand.
+    if (!g_framework->is_vr_game_logo_active()) {
+        m_logo_anchored = false;
+    } else if (!m_logo_anchored && vr->is_hmd_active()) {
+        const auto hmd = vr->get_transform(0);
+        auto back = Vector3f{hmd[2]};
+        back.y = 0.0f;
+
+        if (glm::length(back) < 0.001f) {
+            back = Vector3f{0.0f, 0.0f, 1.0f};
+        }
+
+        back = glm::normalize(back);
+
+        const auto yaw = std::atan2(back.x, back.z);
+
+        m_logo_anchor = Matrix4x4f{glm::angleAxis(yaw, Vector3f{0.0f, 1.0f, 0.0f})};
+        m_logo_anchor[3] = Vector4f{Vector3f{hmd[3]} - (back * g_framework->get_vr_menu_panel_distance()), 1.0f};
+        m_logo_anchored = true;
+    }
+
     // Menue zu -> beim naechsten Oeffnen neu vor den Kopf stellen.
     if (!ui_surface) {
         m_panel_anchored = false;
@@ -189,6 +212,11 @@ void OverlayComponent::update_panel_anchor() {
 }
 
 Matrix4x4f OverlayComponent::compute_panel_transform() const {
+    // [GAME_LOGO_VR] Menue zu und nur das "VR" zu zeigen -> dessen eigener, fester Anker.
+    if (!g_framework->is_drawing_ui() && m_logo_anchored) {
+        return m_logo_anchor;
+    }
+
     return m_panel_anchor;
 }
 
@@ -430,7 +458,9 @@ void OverlayComponent::update_overlay() {
     // Solange das Menue offen ist, zeigt das Overlay das Rendertarget, sonst eine leere
     // Textur. Nicht HideOverlay: ein verstecktes Overlay muesste beim Oeffnen erst wieder
     // hochkommen, die leere Textur ist der ruhigere Weg.
-    const auto drawing_ui = g_framework->is_drawing_ui();
+    // [GAME_LOGO_VR 26.09.2026] Auch bei geschlossenem Menue, solange das Spiel Gui_ui1001
+    // zeigt: dann steht im Rendertarget nur "VR" (REFramework::run_vr_game_logo_frame).
+    const auto drawing_ui = g_framework->is_drawing_ui() || g_framework->is_vr_game_logo_active();
 
     if (is_d3d11) {
         auto rt = drawing_ui ? g_framework->get_rendertarget_d3d11() : g_framework->get_blank_rendertarget_d3d11();
@@ -491,6 +521,6 @@ void OverlayComponent::update_openxr() {
 
     // Der Layer wird nur angehaengt, solange das Menue offen ist -- D3D12Component kopiert
     // dann auch nur dann.
-    xr->ui_layer = g_framework->is_drawing_ui();
+    xr->ui_layer = g_framework->is_drawing_ui() || g_framework->is_vr_game_logo_active();   // [GAME_LOGO_VR]
 }
 }

@@ -1416,7 +1416,50 @@ XrResult OpenXR::end_frame() {
         quad.pose.position = {0.0f, 0.0f, -this->flatscreen_distance};
         quad.size = {this->flatscreen_width, this->flatscreen_width / aspect};
 
+        // [CANVAS_RAUM 26.09.2026 -- Ansage des Users] Die Leinwand steht im RAUM: Kopfpose im
+        // stage_space EINMAL abnehmen (nur Yaw). Ohne gueltige Pose bleibt es beim kopffesten Quad.
+        {
+            const auto& loc = this->view_space_location;
+            const bool valid = (loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)
+                && (loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT);
+
+            if (!this->flatscreen_anchored && valid) {
+                const auto& q = loc.pose.orientation;
+                // -Z der Kopfdrehung in der Welt, auf die Horizontale projiziert.
+                float fx = -(2.0f * (q.x * q.z + q.w * q.y));
+                float fz = -(1.0f - 2.0f * (q.x * q.x + q.y * q.y));
+                const float len = std::sqrt(fx * fx + fz * fz);
+
+                if (len > 1e-4f) {
+                    fx /= len;
+                    fz /= len;
+                } else {
+                    fx = 0.0f;
+                    fz = -1.0f;
+                }
+
+                this->flatscreen_anchor_pos = loc.pose.position;
+                this->flatscreen_anchor_fwd_xz[0] = fx;
+                this->flatscreen_anchor_fwd_xz[1] = fz;
+                this->flatscreen_anchored = true;
+            }
+
+            if (this->flatscreen_anchored) {
+                const float fx = this->flatscreen_anchor_fwd_xz[0];
+                const float fz = this->flatscreen_anchor_fwd_xz[1];
+                const float yaw = std::atan2(-fx, -fz);   // Drehung um +Y, 0 = Blick nach -Z
+
+                quad.space = this->stage_space;
+                quad.pose.orientation = {0.0f, std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f)};
+                quad.pose.position = {this->flatscreen_anchor_pos.x + fx * this->flatscreen_distance,
+                                      this->flatscreen_anchor_pos.y,
+                                      this->flatscreen_anchor_pos.z + fz * this->flatscreen_distance};
+            }
+        }
+
         layers.push_back((XrCompositionLayerBaseHeader*)&quad);
+    } else {
+        this->flatscreen_anchored = false;   // [CANVAS_RAUM] Leinwand aus -> naechstes Mal neu abnehmen
     }
 
     // ---------------------------------------------------------------------

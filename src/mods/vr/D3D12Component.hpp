@@ -178,6 +178,10 @@ private:
         DXGI_FORMAT format{DXGI_FORMAT_UNKNOWN};
         bool shown{false};
         bool failed{false};   // creation failed once - don't retry every frame
+        // [CANVAS_RAUM 26.09.2026] Einmal abgenommene Kopfpose (nur Yaw) -- die Leinwand steht im Raum.
+        bool anchored{false};
+        float anchor_pos[3]{};
+        float anchor_fwd_xz[2]{0.0f, -1.0f};
     } m_flatscreen_overlay;
 
     uint32_t m_backbuffer_size[2]{};

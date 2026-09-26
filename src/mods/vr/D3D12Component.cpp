@@ -119,6 +119,15 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     // Flatscreen canvas. Purely additive: it only reads the finished frame and drives its
     // own overlay, so with the feature off (the default) nothing below changes at all.
+    // [CANVAS_RECENTER] Recenter -> die Leinwand nimmt die Kopfpose beim naechsten Frame neu ab.
+    if (vr->consume_flatscreen_reanchor()) {
+        m_flatscreen_overlay.anchored = false;
+
+        if (vr->m_openxr != nullptr) {
+            vr->m_openxr->flatscreen_anchored = false;
+        }
+    }
+
     if (runtime->is_openvr()) {
         update_flatscreen_overlay(vr, eye_texture.Get(), command_queue);
     } else if (runtime->is_openxr() && vr->m_openxr->ready()) {
@@ -684,6 +693,7 @@ void D3D12Component::update_flatscreen_overlay(VR* vr, ID3D12Resource* frame, ID
             ov.shown = false;
         }
 
+        ov.anchored = false;   // [CANVAS_RAUM] naechstes Einschalten nimmt die Kopfpose neu ab
         return;
     }
 
@@ -764,7 +774,66 @@ void D3D12Component::update_flatscreen_overlay(VR* vr, ID3D12Resource* frame, ID
     transform.m[2][3] = -vr->get_flatscreen_overlay_distance();
 
     vr::VROverlay()->SetOverlayWidthInMeters(ov.handle, vr->get_flatscreen_overlay_width());
-    vr::VROverlay()->SetOverlayTransformTrackedDeviceRelative(ov.handle, vr::k_unTrackedDeviceIndex_Hmd, &transform);
+
+    // [CANVAS_RAUM 26.09.2026 -- Ansage des Users] Die Leinwand steht im RAUM, nicht kopffest:
+    // Kopfpose beim Einschalten EINMAL abnehmen (nur Yaw), dann im Tracking-Raum des Compositors
+    // stehen lassen. Solange keine gueltige Pose da ist, bleibt es beim kopffesten Weg.
+    bool placed = false;
+
+    if (vr::VRSystem() != nullptr && vr::VRCompositor() != nullptr) {
+        const auto universe = vr::VRCompositor()->GetTrackingSpace();
+
+        if (!ov.anchored) {
+            vr::TrackedDevicePose_t hmd_pose{};
+            vr::VRSystem()->GetDeviceToAbsoluteTrackingPose(universe, 0.0f, &hmd_pose, 1);
+
+            if (hmd_pose.bPoseIsValid) {
+                const auto& m = hmd_pose.mDeviceToAbsoluteTracking.m;
+                ov.anchor_pos[0] = m[0][3];
+                ov.anchor_pos[1] = m[1][3];
+                ov.anchor_pos[2] = m[2][3];
+
+                // Blickrichtung = -Z der HMD-Matrix, auf die Horizontale projiziert.
+                float fx = -m[0][2];
+                float fz = -m[2][2];
+                const float len = std::sqrt(fx * fx + fz * fz);
+
+                if (len > 1e-4f) {
+                    fx /= len;
+                    fz /= len;
+                } else {
+                    fx = 0.0f;
+                    fz = -1.0f;
+                }
+
+                ov.anchor_fwd_xz[0] = fx;
+                ov.anchor_fwd_xz[1] = fz;
+                ov.anchored = true;
+            }
+        }
+
+        if (ov.anchored) {
+            const float fx = ov.anchor_fwd_xz[0];
+            const float fz = ov.anchor_fwd_xz[1];
+            const float d = vr->get_flatscreen_overlay_distance();
+
+            // Spalten: X = rechts (-fz, 0, fx), Y = oben, Z = zum Betrachter (-fx, 0, -fz).
+            vr::HmdMatrix34_t world{};
+            world.m[0][0] = -fz;  world.m[0][1] = 0.0f; world.m[0][2] = -fx;
+            world.m[1][0] = 0.0f; world.m[1][1] = 1.0f; world.m[1][2] = 0.0f;
+            world.m[2][0] = fx;   world.m[2][1] = 0.0f; world.m[2][2] = -fz;
+            world.m[0][3] = ov.anchor_pos[0] + fx * d;
+            world.m[1][3] = ov.anchor_pos[1];
+            world.m[2][3] = ov.anchor_pos[2] + fz * d;
+
+            vr::VROverlay()->SetOverlayTransformAbsolute(ov.handle, universe, &world);
+            placed = true;
+        }
+    }
+
+    if (!placed) {
+        vr::VROverlay()->SetOverlayTransformTrackedDeviceRelative(ov.handle, vr::k_unTrackedDeviceIndex_Hmd, &transform);
+    }
 
     // Same copy pattern the eye textures use.
     ov.tex.commands.wait(INFINITE);
@@ -1227,9 +1296,31 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
         if (SUCCEEDED(swapchain->GetBuffer(0, IID_PPV_ARGS(&bb)))) {
             const auto bb_desc = bb->GetDesc();
 
+            // [CANVAS_FARBEN 26.09.2026] Wie [XR_UI_FARBEN] beim Slate: die Leinwand bekommt
+            // die Kanalreihenfolge ihrer QUELLE. Die Quelle ist der ECHTE Swapchain-Backbuffer
+            // (Log: "Real Backbuffer ... format: 28" = R8G8B8A8), swapchain_format folgt aber
+            // im Multipass den Augen-Texturen ("format: 87" = B8G8R8A8) -> R und B vertauscht,
+            // die Cutscene im Headset blau. _SRGB bleibt, nur die Kanalreihenfolge folgt bb.
+            DXGI_FORMAT canvas_format = swapchain_format;
+
+            switch (bb_desc.Format) {
+                case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+                case DXGI_FORMAT_R8G8B8A8_UNORM:
+                case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+                    canvas_format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+                    break;
+                case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+                case DXGI_FORMAT_B8G8R8A8_UNORM:
+                case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+                    canvas_format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+                    break;
+                default:
+                    break;
+            }
+
             XrSwapchainCreateInfo ci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
             ci.arraySize = 1;
-            ci.format = swapchain_format;
+            ci.format = canvas_format;
             ci.width = (uint32_t)bb_desc.Width;
             ci.height = (uint32_t)bb_desc.Height;
             ci.mipCount = 1;
@@ -1242,7 +1333,18 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
             sc.width = ci.width;
             sc.height = ci.height;
 
-            if (xrCreateSwapchain(openxr->session, &ci, &sc.handle) == XR_SUCCESS) {
+            auto canvas_res = xrCreateSwapchain(openxr->session, &ci, &sc.handle);
+
+            // [CANVAS_FARBEN] Rueckfall: lehnt die Laufzeit das Format ab, exakt wie bisher.
+            if (canvas_res != XR_SUCCESS && canvas_format != swapchain_format) {
+                spdlog::warn("[VR] Flatscreen: format {} refused by runtime, falling back to {}.",
+                             (uint32_t)canvas_format, (uint32_t)swapchain_format);
+                canvas_format = swapchain_format;
+                ci.format = swapchain_format;
+                canvas_res = xrCreateSwapchain(openxr->session, &ci, &sc.handle);
+            }
+
+            if (canvas_res == XR_SUCCESS) {
                 const auto canvas_idx = (uint32_t)openxr->views.size();
                 openxr->swapchains.push_back(sc);
 
@@ -1274,14 +1376,15 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
 
                             cctx.texture_contexts[j] = std::make_unique<d3d12::TextureContext>();
                             cctx.texture_contexts[j]->setup(device, cctx.textures[j].texture,
-                                swapchain_format, swapchain_format,
+                                canvas_format, canvas_format,
                                 (std::wstring{L"OpenXR Flatscreen "} + std::to_wstring(j)).c_str());
 
                             XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
                             xrReleaseSwapchainImage(sc.handle, &ri);
                         }
 
-                        spdlog::info("[VR] OpenXR flatscreen swapchain: {}x{} ({} images)", sc.width, sc.height, image_count);
+                        spdlog::info("[VR] OpenXR flatscreen swapchain: {}x{} ({} images, format {}, source {})",
+                                     sc.width, sc.height, image_count, (uint32_t)canvas_format, (uint32_t)bb_desc.Format);
                     }
                 }
             } else {

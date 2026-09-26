@@ -151,6 +151,10 @@ public:
     bool flatscreen_layer{false};
     float flatscreen_width{2.5f};
     float flatscreen_distance{2.0f};
+    // [CANVAS_RAUM 26.09.2026] Leinwand im Raum: einmal abgenommene Kopfpose (stage_space, nur Yaw).
+    bool flatscreen_anchored{false};
+    XrVector3f flatscreen_anchor_pos{};
+    float flatscreen_anchor_fwd_xz[2]{0.0f, -1.0f};
 
     // --- ImGui-Slate als Quad-Layer -------------------------------------
     // [XR_UI_OVERLAY 2026-08-14] OpenXR hat kein Gegenstueck zu vr::VROverlay, deshalb

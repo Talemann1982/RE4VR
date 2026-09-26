@@ -1988,6 +1988,66 @@ bool REFramework::draw_menu_window(bool vr) {
 // Renderer ist REFrameworks zweites DX12-Backend (imgui_backend_datas[1]), das
 // schon immer ins VR-Rendertarget RTV::IMGUI gezeichnet hat.
 // ============================================================================
+// [GAME_LOGO_VR 26.09.2026] Ein Frame im VR-Menue-Kontext, der NUR "VR" in re4-title zeichnet:
+// kein Fenster, kein Rahmen, keine Eingabe, durchsichtiger Hintergrund (RTV::IMGUI wird mit
+// Alpha 0 geleert). Die Tafel zeigt das dann an ihrer ueblichen Stelle (OverlayComponent).
+void REFramework::run_vr_game_logo_frame() {
+    const auto main_ctx = ImGui::GetCurrentContext();
+
+    if (main_ctx == nullptr) {
+        return;
+    }
+
+    auto* const atlas = ImGui::GetIO().Fonts;
+    const auto delta_time = ImGui::GetIO().DeltaTime;
+
+    if (m_vr_menu.ctx != nullptr && m_vr_menu.atlas != atlas) {
+        ImGui::DestroyContext(m_vr_menu.ctx);
+        m_vr_menu.ctx = nullptr;
+    }
+
+    if (m_vr_menu.ctx == nullptr) {
+        m_vr_menu.ctx = ImGui::CreateContext(atlas);
+        m_vr_menu.atlas = atlas;
+    }
+
+    ImGui::SetCurrentContext(m_vr_menu.ctx);
+    ImNodes::SetImGuiContext(m_vr_menu.ctx);
+
+    auto& io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    io.LogFilename = nullptr;
+    io.DisplaySize = ImVec2{VR_MENU_WIDTH, VR_MENU_HEIGHT};
+    io.DisplayFramebufferScale = ImVec2{1.0f, 1.0f};
+    io.DeltaTime = delta_time > 0.0f ? delta_time : (1.0f / 90.0f);
+    io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
+    io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+
+    ImGui::NewFrame();
+
+    {
+        auto* const draw_list = ImGui::GetForegroundDrawList();
+        auto* const font = m_vr_font_heading;
+        const float px = font->FontSize * (std::max)(0.05f, m_vr_game_logo_scale);
+        const ImVec2 size = font->CalcTextSizeA(px, FLT_MAX, 0.0f, "VR");
+        const ImVec2 pos{m_vr_game_logo_x * VR_MENU_WIDTH - size.x * 0.5f,
+                         m_vr_game_logo_y * VR_MENU_HEIGHT - size.y * 0.5f};
+
+        // Wie das "VR" im Menue-Logo: rot mit dunklem Schatten rechts unten.
+        const float off = px * 0.06f;
+        draw_list->AddText(font, px, ImVec2{pos.x + off, pos.y + off}, IM_COL32(0, 0, 0, 200), "VR");
+        draw_list->AddText(font, px, pos, IM_COL32(255, 0, 0, 255), "VR");
+    }
+
+    ImGui::EndFrame();
+    ImGui::Render();
+
+    m_vr_menu.has_draw_data = true;
+
+    ImNodes::SetImGuiContext(main_ctx);
+    ImGui::SetCurrentContext(main_ctx);
+}
+
 void REFramework::run_vr_menu_frame() {
     m_vr_menu.has_draw_data = false;
 
@@ -2035,6 +2095,13 @@ void REFramework::run_vr_menu_frame() {
                         && vr->is_hmd_active();
 
     if (!wanted) {
+        // [GAME_LOGO_VR] Menue zu, aber das Spiel zeigt Gui_ui1001 -> nur "VR" auf die Tafel.
+        if (m_initialized && !m_draw_ui && m_renderer_type == RendererType::D3D12
+            && m_d3d12.imgui_backend_datas[1] != nullptr && vr->is_hmd_active()
+            && m_vr_font_heading != nullptr && is_vr_game_logo_active()) {
+            run_vr_game_logo_frame();
+        }
+
         return;
     }
 
@@ -2775,7 +2842,16 @@ void REFramework::draw_menu_nav() {
     {
         // [LOGO TIEFER 16.09.2026 -- Ansage des Users] Eine halbe Zeile Abstand
         // zum oberen Rand der Spalte.
-        ImGui::Dummy(ImVec2{0.0f, row_height * 0.5f});
+        // [LOGO-OBEN 26.09.2026] Jetzt ueber den Menu Editor einstellbar (0.5 = bisher).
+        {
+            const float top_gap = m_vr_menu_logo_top_gap * row_height;
+
+            if (top_gap > 0.0f) {
+                ImGui::Dummy(ImVec2{0.0f, top_gap});
+            } else {
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + top_gap);
+            }
+        }
 
         // [LOGO RESIDENT EVIL 4 25.09.2026 -- Ansage des Users] Statt "RE4VR":
         // oben "RESIDENT EVIL 4" kleiner (passt in die Spalte), darunter "VR"

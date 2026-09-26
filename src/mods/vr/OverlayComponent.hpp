@@ -71,6 +71,10 @@ private:
 
     Matrix4x4f m_panel_anchor{1.0f};
     bool m_panel_anchored{false};
+    // [GAME_LOGO_VR 26.09.2026] Eigener Anker fuer das "VR" bei Gui_ui1001: einmal vor den Kopf,
+    // sobald es erscheint, dann fest bis es verschwindet -- das Menue verschiebt es nicht.
+    Matrix4x4f m_logo_anchor{1.0f};
+    bool m_logo_anchored{false};
     Vector3f m_panel_head_pos{0.0f, 0.0f, 0.0f};   // Kopfposition beim Oeffnen
     Vector3f m_panel_back{0.0f, 0.0f, 1.0f};       // waagerechte Blickrichtung (nach hinten)
     float m_panel_distance_used{0.0f};

@@ -23,6 +23,7 @@
 
 #include "RE4VRUi.hpp"
 #include "RE4VRCrosshair.hpp"   // [DOT_CROSSHAIR]
+#include "RE4VRKillswitch.hpp"   // [CUT2D] is_real_cutscene
 
 #undef min
 #undef max
@@ -821,6 +822,7 @@ void RE4VRUi::load_cfg() {
     m_opt.gui_elem = b("gui_elem", m_opt.gui_elem);
     m_opt.mono = b("mono", m_opt.mono);
     m_opt.canvas = b("canvas", m_opt.canvas);
+    m_opt.cutscene_2d = b("cutscene_2d", m_opt.cutscene_2d);
     m_opt.suspend = b("suspend", m_opt.suspend);
     m_opt.mapglue = b("mapglue", m_opt.mapglue);
     m_glue_distance = n("glue_distance", m_glue_distance);
@@ -864,6 +866,12 @@ void RE4VRUi::load_cfg() {
     }
 
     m_ui3101_scale = n("ui3101_scale", m_ui3101_scale);
+    m_cut_ui0200_x = n("cut_ui0200_x", m_cut_ui0200_x);
+    m_cut_ui0200_y = n("cut_ui0200_y", m_cut_ui0200_y);
+    m_cut_ui0200_scale = n("cut_ui0200_scale", m_cut_ui0200_scale);
+    m_game_logo_x = n("game_logo_x", m_game_logo_x);
+    m_game_logo_y = n("game_logo_y", m_game_logo_y);
+    m_game_logo_scale = n("game_logo_scale", m_game_logo_scale);
 }
 
 void RE4VRUi::save_cfg() {
@@ -873,6 +881,7 @@ void RE4VRUi::save_cfg() {
     d["gui_elem"] = m_opt.gui_elem;
     d["mono"] = m_opt.mono;
     d["canvas"] = m_opt.canvas;
+    d["cutscene_2d"] = m_opt.cutscene_2d;
     d["suspend"] = m_opt.suspend;
     d["mapglue"] = m_opt.mapglue;
     d["glue_distance"] = m_glue_distance;
@@ -906,6 +915,12 @@ void RE4VRUi::save_cfg() {
     d["global_hide"] = gh;
 
     d["ui3101_scale"] = m_ui3101_scale;
+    d["cut_ui0200_x"] = m_cut_ui0200_x;
+    d["cut_ui0200_y"] = m_cut_ui0200_y;
+    d["cut_ui0200_scale"] = m_cut_ui0200_scale;
+    d["game_logo_x"] = m_game_logo_x;
+    d["game_logo_y"] = m_game_logo_y;
+    d["game_logo_scale"] = m_game_logo_scale;
     d["ptr_pitch"] = m_ptr_pitch;
     d["forest_menu"] = m_forest_menu;
 
@@ -1000,7 +1015,102 @@ void RE4VRUi::on_lua_state_destroyed(sol::state& lua) {
     m_cfg_dirty_t.reset();
 }
 
+// [CUT2D 26.09.2026 -- Ansage des Users] "Enable 2D Cutscenes": waehrend einer ECHTEN Cutscene
+// (RE4VRKillswitch::is_real_cutscene = Event-Kamera, bzw. IsPlayingEvent ohne Spielerkamera) zeigt
+// die Flatscreen-Leinwand das Monitorbild (OpenVR-Overlay bzw. OpenXR-Quad), Kamera-Eingriffe
+// ruhen, die Augen sind schwarz. Laeuft VOR dem mods_gated-Ausstieg, damit die Leinwand auch
+// dann ein- und wieder AUSgeschaltet wird. Schalter aus und keine Cutscene-Leinwand aktiv ->
+// sofort raus: kein Engine-Aufruf, kein apply_canvas.
+void RE4VRUi::cutscene_2d_tick() {
+    if (!m_opt.cutscene_2d && !m_cut2d_active) {
+        return;
+    }
+
+    bool want = false;
+
+    if (m_opt.cutscene_2d) {
+        if (auto& ks = RE4VRKillswitch::get(); ks != nullptr) {
+            want = ks->is_real_cutscene_pub();
+        }
+    }
+
+    // [CUT2D_KICK] Laufende Cutscene: einmal kurz aus/an (s. hpp), danach nichts mehr.
+    if (want && m_cut2d_active) {
+        if (m_cut2d_kick_frames > 0) {
+            if (--m_cut2d_kick_frames == 0) {
+                apply_canvas(true);
+            }
+        } else if (m_cut2d_kick_at > 0.0 && clock_now() >= m_cut2d_kick_at) {
+            m_cut2d_kick_at = 0.0;
+            m_cut2d_kick_frames = 2;
+            apply_canvas(m_state.map_open && m_opt.canvas);
+        }
+
+        return;
+    }
+
+    if (want == m_cut2d_active) {
+        return;
+    }
+
+    m_cut2d_active = want;
+    m_cut2d_kick_at = want ? clock_now() + 0.3 : 0.0;
+    m_cut2d_kick_frames = 0;
+    apply_canvas((m_state.map_open && m_opt.canvas) || m_cut2d_active);
+}
+
+// [CUT2D_UI0200] Position = Original + (x, y); Groesse = Original * scale. Das Original wird beim
+// ersten Anwenden EINMAL gelesen und am Ende der Cutscene zurueckgeschrieben.
+void RE4VRUi::cut_ui0200_apply(::REManagedObject* go) {
+    auto* ctrl = gui_root_control(go);
+
+    if (ctrl == nullptr) {
+        return;
+    }
+
+    if (!m_cut2d_active) {
+        if (m_cut_ui0200_applied && ctrl == m_cut_ui0200_ctrl) {
+            set_vec3(ctrl, "set_Position", m_cut_ui0200_orig_pos);
+            set_vec3(ctrl, "set_Scale", m_cut_ui0200_orig_scale);
+        }
+
+        m_cut_ui0200_applied = false;
+        m_cut_ui0200_ctrl = nullptr;
+        return;
+    }
+
+    if (!m_cut_ui0200_applied || ctrl != m_cut_ui0200_ctrl) {
+        glm::vec3 p{};
+        glm::vec3 sc{1.0f, 1.0f, 1.0f};
+
+        if (!re4vr::obj_get_vec3(ctrl, "get_Position", p) || !re4vr::obj_get_vec3(ctrl, "get_Scale", sc)) {
+            return;
+        }
+
+        m_cut_ui0200_orig_pos = p;
+        m_cut_ui0200_orig_scale = sc;
+        m_cut_ui0200_ctrl = ctrl;
+        m_cut_ui0200_applied = true;
+    }
+
+    set_vec3(ctrl, "set_Position",
+             m_cut_ui0200_orig_pos + glm::vec3{m_cut_ui0200_x, m_cut_ui0200_y, 0.0f});
+    set_vec3(ctrl, "set_Scale", m_cut_ui0200_orig_scale * m_cut_ui0200_scale);
+}
+
+void RE4VRUi::draw_public_2d_cutscenes() {
+    bool v = m_opt.cutscene_2d;
+
+    if (g_framework->draw_menu_checkbox("Enable 2D Cutscenes", &v)) {
+        m_opt.cutscene_2d = v;
+        save_cfg();
+    }
+}
+
 void RE4VRUi::on_frame() {
+    cutscene_2d_tick();   // [CUT2D] vor dem Riegel
+    g_framework->set_vr_game_logo_layout(m_game_logo_x, m_game_logo_y, m_game_logo_scale);   // [GAME_LOGO_VR]
+
     if (re4vr::mods_gated()) {
         return;
     }
@@ -1031,7 +1141,7 @@ void RE4VRUi::on_frame() {
     apply_override(m_state.map_open && m_opt.gui_matrix);
     apply_elem(m_state.map_open && m_opt.gui_elem);
     apply_mono(m_state.map_open && m_opt.mono);
-    apply_canvas(m_state.map_open && m_opt.canvas);
+    apply_canvas((m_state.map_open && m_opt.canvas) || cut2d_show());   // [CUT2D] aus -> wie bisher
     apply_suspend(m_state.map_open && m_opt.suspend);
 
     // [FERNGLAS 2026-08-11] Zweiter Pin-Fall. Beide teilen sich den
@@ -1086,6 +1196,16 @@ bool RE4VRUi::on_pre_gui_draw_element(::REComponent* element, void* context) {
 
     if (name.empty()) {
         return true;
+    }
+
+    // [GAME_LOGO_VR] Spiel zeichnet Gui_ui1001 -> REFramework zeigt "VR" auf der Menuetafel.
+    if (name == "Gui_ui1001") {
+        g_framework->request_vr_game_logo();
+    }
+
+    // [CUT2D_UI0200] Nur waehrend der Cutscene-Leinwand; sonst hoechstens einmal zurueckstellen.
+    if (name == "Gui_ui0200" && (m_cut2d_active || m_cut_ui0200_applied)) {
+        cut_ui0200_apply(go);
     }
 
     // [DOT_CROSSHAIR 26.09.2026] Ist der Mittel-Dot das Fadenkreuz, gilt fuer ihn dasselbe wie fuer
@@ -1359,7 +1479,22 @@ void RE4VRUi::draw_dev_ui() {
                            "aufmachen.");
     }
 
-    if (m_opt.canvas) {
+    // [GAME_LOGO_VR] "VR" auf der Menuetafel, solange Gui_ui1001 gezeichnet wird (Menue zu).
+    ImGui::TextUnformatted("VR-Logo (bei Gui_ui1001)");
+    dirty |= ImGui::SliderFloat("VR-Logo X##ui_glx", &m_game_logo_x, 0.0f, 1.0f, "%.3f");
+    dirty |= ImGui::SliderFloat("VR-Logo Y##ui_gly", &m_game_logo_y, 0.0f, 1.0f, "%.3f");
+    dirty |= ImGui::SliderFloat("VR-Logo Scale##ui_gls", &m_game_logo_scale, 0.2f, 10.0f, "%.2f");
+
+    // [CUT2D_UI0200] Wirkt NUR waehrend der Cutscene-Leinwand (Enable 2D Cutscenes an).
+    if (m_opt.cutscene_2d) {
+        ImGui::TextUnformatted("2D Cutscenes: Gui_ui0200");
+        dirty |= ImGui::SliderFloat("Gui_ui0200 X##ui_c200x", &m_cut_ui0200_x, -1500.0f, 1500.0f, "%.0f");
+        dirty |= ImGui::SliderFloat("Gui_ui0200 Y##ui_c200y", &m_cut_ui0200_y, -1500.0f, 1500.0f, "%.0f");
+        dirty |= ImGui::SliderFloat("Gui_ui0200 Scale##ui_c200s", &m_cut_ui0200_scale, 0.1f, 3.0f, "%.2f");
+    }
+
+    // [CUT2D] Die Regler gelten auch fuer die Cutscene-Leinwand.
+    if (m_opt.canvas || m_opt.cutscene_2d) {
         dirty |= ImGui::SliderFloat("Leinwand-Breite (m)##ui_cw", &m_canvas_width, 0.1f,
                                     20.0f);
         dirty |= ImGui::SliderFloat("Leinwand-Abstand (m)##ui_cd", &m_canvas_distance, 0.1f,
