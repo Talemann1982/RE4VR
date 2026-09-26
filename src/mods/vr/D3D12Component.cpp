@@ -915,7 +915,12 @@ void D3D12Component::setup() {
 
     auto rt_desc = backbuffer_desc;
 
-    rt_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    // [AFW-COLOR 26.09.2026] Fallback war B8G8R8A8_UNORM. Der greift bei jedem
+    // Nicht-8-Bit-Backbuffer (RE4: R10G10B10A2), waehrend die OpenXR-Swapchain in
+    // create_swapchains() dann auf R8G8B8A8_UNORM_SRGB faellt. Die Augen werden
+    // per Byte-Kopie (CopyResource) hineingeschoben -> Rot/Blau vertauscht in AFW
+    // (VDXR-User: blaues Bild). Jetzt dieselbe Familie wie die Swapchain.
+    rt_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     rt_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     rt_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
 
