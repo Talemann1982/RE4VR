@@ -1834,20 +1834,6 @@ void RE4VRBinding::on_frame() {
     // Grapple-RT.
     re4vr::lua_set_bool("__vr_raw_r_trigger", r_trigger);
 
-    // [RT-DIAG 2026-09-08 -- WEGWERF] Der RT-Blocker nach Cutscenes zeigt sich im
-    // Lua-Log als __vr_raw_r_trigger=0. Das hat ZWEI moegliche Ursachen, die von
-    // aussen nicht zu trennen sind: die Action liefert wirklich false, ODER diese
-    // Zeile wird gar nicht mehr erreicht (dann steht der Global nur still).
-    // Der Zaehler trennt genau das: steigt er im Bug weiter, laeuft die Zeile.
-    // Zusaetzlich der rechte B-Button als Gegenprobe DERSELBEN Hand -- ist er 1
-    // waehrend rt 0 bleibt, ist nur die Trigger-Action betroffen, nicht die Hand.
-    {
-        static double s_input_n = 0.0;
-        s_input_n += 1.0;
-        re4vr::lua_set_number("__re4_dbg_input_n", s_input_n);
-        re4vr::lua_set_bool("__re4_dbg_rb_raw", digital(act_b, rh));
-    }
-
     const bool knife_equipped = re4vr::lua_get_tribool("__re4_knife_equipped") == 1;
     const std::string knife_hand = re4vr::lua_get_string("__re4_knife_hand");
     const bool knife_left_clone = re4vr::lua_get_tribool("__re4_knife_left_clone") == 1;
@@ -4668,38 +4654,6 @@ void RE4VRBinding::draw_dev_ui() {
             g_framework->set_vr_menu_trackpad_scale(f);
             m_prefs.trackpad_scroll = f;
             save_prefs();
-        }
-    }
-
-    // [TRACKPAD-DIAGNOSE 15.09.2026] Das Scrollen im eigenen Menue kam unter
-    // OpenVR nicht an. Hier die ROHWERTE, am Desktop ablesbar: kommt beim
-    // Wischen nichts an, liegt es an der Bindung/dem Action-Handle; kommen
-    // Werte an, liegt es an der Auswertung im Menue.
-    {
-        auto& vr = VR::get();
-
-        if (vr != nullptr) {
-            const auto pad = vr->get_right_touchpad_axis();
-            const bool klick_l = vr->is_action_active(vr->get_action_touchpad_click(),
-                                                      vr->get_left_joystick());
-            const bool klick_r = vr->is_action_active(vr->get_action_touchpad_click(),
-                                                      vr->get_right_joystick());
-
-            ImGui::Text("Trackpad rechts: x=%.2f y=%.2f | Klick L=%d R=%d | Handle=%s",
-                        pad.x, pad.y, klick_l ? 1 : 0, klick_r ? 1 : 0,
-                        (vr->get_action_touchpad() == vr::k_ulInvalidActionHandle)
-                            ? "UNGUELTIG" : "ok");
-
-            // [DIAGNOSE 15.09.2026] Der Press kommt unter OpenXR nicht an.
-            // -1 = keine OpenXR-Runtime, -2 = Aktion nicht gebunden, sonst die
-            // rohe Kraft. "press" ist das, was die Gesten tatsaechlich sehen.
-            ImGui::Text("Trackpad Kraft: L=%.2f R=%.2f | press L=%d R=%d | ForceHandle=%s",
-                        vr->get_touchpad_force(VRRuntime::Hand::LEFT),
-                        vr->get_touchpad_force(VRRuntime::Hand::RIGHT),
-                        vr->is_touchpad_pressed(VRRuntime::Hand::LEFT) ? 1 : 0,
-                        vr->is_touchpad_pressed(VRRuntime::Hand::RIGHT) ? 1 : 0,
-                        (vr->get_action_touchpad_force() == vr::k_ulInvalidActionHandle)
-                            ? "UNGUELTIG" : "ok");
         }
     }
 

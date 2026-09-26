@@ -23,6 +23,7 @@
 
 #include <array>
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -238,6 +239,11 @@ private:
     // [M7] Getrennt vom laser_this: __re4_laser_ctrl behaelt im Original den
     // letzten GUELTIGEN Controller, auch wenn laser_this genullt wird.
     RefHandle m_laser_ctrl{};
+    // [LASER_RC 26.09.2026] updateLaser laeuft fuer mehrere Laser PARALLEL auf
+    // Job-Threads. Ungeschuetzte store()-Aufrufe auf die gemeinsamen Handles
+    // haben Referenzen doppelt freigegeben -> Laser-Controller ohne onDestroy
+    // freigegeben, blieb in OptionManager.CallbackOnOptionChanged -> GC-Absturz.
+    std::mutex m_laser_mtx{};
 
     std::optional<int32_t> m_current_weapon_id{};
     std::optional<int32_t> m_cached_weapon_id{};

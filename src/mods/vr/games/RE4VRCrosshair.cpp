@@ -29,6 +29,14 @@
 
 #include "RE4VRCrosshair.hpp"
 
+namespace {
+// [LASER_RC 26.09.2026] Der Controller, dessen updateLaser GERADE auf diesem
+// Thread laeuft (Pre setzt, Post liest). Ohne Referenzzaehlung: das Objekt lebt
+// waehrend seines eigenen Aufrufs sicher. Frueher ein gemeinsamer RefHandle --
+// parallele Aufrufe haben dessen add_ref/release verschraenkt (s. hpp).
+thread_local ::REManagedObject* t_laser_this = nullptr;
+}
+
 // ============================================================================
 // Lokale Helfer
 // ============================================================================
@@ -920,7 +928,10 @@ void RE4VRCrosshair::on_lua_state_destroyed(sol::state& lua) {
     m_dot_body_weg = false;
     m_public_ui_registered = false;
     m_dispatcher_present = false;
-    store(m_laser_ctrl, nullptr);
+    {
+        std::scoped_lock _{m_laser_mtx};   // [LASER_RC]
+        store(m_laser_ctrl, nullptr);
+    }
 
     load_cfg();
     load_hud_cfg();
@@ -2040,18 +2051,37 @@ void RE4VRCrosshair::on_late_update_behavior() {
         return;
     }
 
-    if (m_laser_ctrl.obj == nullptr) {
+    // [LASER_RC] Unter Sperre kopieren und selbst eine Referenz nehmen -- die
+    // Update-Hooks koennen m_laser_ctrl parallel umhaengen.
+    ::REManagedObject* ctrl = nullptr;
+    bool held = false;
+    {
+        std::scoped_lock _{m_laser_mtx};
+        ctrl = m_laser_ctrl.obj;
+        held = keep(ctrl);
+    }
+
+    if (ctrl == nullptr) {
         return;
     }
 
     // Leiche? Das GameObject ist der einzige Wert, der den Tod nicht ueberlebt.
-    if (re4vr::call_safe<::REManagedObject*>(m_laser_ctrl.obj, "get_GameObject") == nullptr) {
-        store(m_laser_ctrl, nullptr);
+    if (re4vr::call_safe<::REManagedObject*>(ctrl, "get_GameObject") == nullptr) {
+        {
+            std::scoped_lock _{m_laser_mtx};
+
+            if (m_laser_ctrl.obj == ctrl) {
+                store(m_laser_ctrl, nullptr);
+            }
+        }
+
+        drop(ctrl, held);
         re4vr::lua_set_nil("__re4_laser_ctrl");
         return;
     }
 
-    laser_apply(m_laser_ctrl.obj);
+    laser_apply(ctrl);
+    drop(ctrl, held);
 }
 
 void RE4VRCrosshair::on_pre_application_entry(void* entry, const char* name, size_t hash) {
@@ -2773,7 +2803,7 @@ void RE4VRCrosshair::hook_pre_update_laser(std::vector<uintptr_t>& args) {
     // behaelt dagegen den letzten GUELTIGEN Controller -- der Nachzieh-Tick
     // braucht ihn auch dann, wenn die Engine updateLaser gerade nicht ruft.
     // Deshalb zwei getrennte Handles.
-    store(m_laser_this, nullptr);
+    t_laser_this = nullptr;
 
     if (args.size() < 2) {
         return;
@@ -2782,9 +2812,20 @@ void RE4VRCrosshair::hook_pre_update_laser(std::vector<uintptr_t>& args) {
     auto* self = reinterpret_cast<::REManagedObject*>(args[1]);
 
     if (self != nullptr) {
-        store(m_laser_this, self);
-        store(m_laser_ctrl, self);
-        re4vr::lua_set_managed_object("__re4_laser_ctrl", self);
+        t_laser_this = self;
+
+        // [LASER_RC] m_laser_ctrl nur unter Sperre umhaengen; das Lua-Global
+        // nur bei echtem Wechsel und AUSSERHALB der Sperre (eigene Lua-Sperre).
+        bool changed = false;
+        {
+            std::scoped_lock _{m_laser_mtx};
+            changed = (m_laser_ctrl.obj != self);
+            store(m_laser_ctrl, self);
+        }
+
+        if (changed) {
+            re4vr::lua_set_managed_object("__re4_laser_ctrl", self);
+        }
     }
 }
 
@@ -2794,7 +2835,9 @@ void RE4VRCrosshair::hook_post_update_laser() {
     if (re4vr::mods_gated()) {
         return;
     }
-    laser_apply(m_laser_this.obj);
+    auto* self = t_laser_this;   // [LASER_RC] eigener Thread, eigener Controller
+    t_laser_this = nullptr;
+    laser_apply(self);
 }
 
 void RE4VRCrosshair::laser_apply(::REManagedObject* self) {

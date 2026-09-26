@@ -89,32 +89,6 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         return nullptr;
     };
 
-    // [BLANK_EYE DIAG 2026-08-14] Nur bei ZUSTANDSWECHSEL schreiben, sonst Logflut.
-    // Zeigt, ob der Schwaerz-Wunsch ueberhaupt in der DLL ankommt und welcher Kopierzweig
-    // unter OpenXR gerade laeuft -- genau daran haengt, ob die CopyFn zieht.
-    // Wieder RAUS, sobald das linke Auge im Scope schwarz wird.
-    // (vr->get_runtime() statt des lokalen `runtime` -- das wird erst weiter unten angelegt)
-    if (vr->get_runtime()->is_openxr()) {
-        static int32_t s_last_blank = -99;
-        static int32_t s_last_branch = -99;
-
-        const auto is_mp = vr->is_using_multipass();
-        const auto has_mp_tex = vr->m_multipass.eye_textures[0].Get() != nullptr &&
-                                vr->m_multipass.eye_textures[1].Get() != nullptr;
-        const auto upscaler_ready = TemporalUpscaler::get()->ready();
-        // 0 = AFR/AFW-Zweig, 1 = Multipass mit Eye-Texturen, 2 = Multipass ohne (ctx0/ctx1)
-        const int32_t branch = !is_mp ? 0 : (has_mp_tex ? 1 : 2);
-
-        if (vr->get_blank_eye() != s_last_blank || branch != s_last_branch) {
-            s_last_blank = vr->get_blank_eye();
-            s_last_branch = branch;
-
-            spdlog::info("[VR][BLANK_EYE] blank_eye={} blank_all={} branch={} multipass={} mp_tex={} upscaler={}",
-                vr->get_blank_eye(), vr->should_blank_all_eyes(), branch, is_mp, has_mp_tex, upscaler_ready);
-        }
-    }
-
-
     auto runtime = vr->get_runtime();
 
     // Flatscreen canvas. Purely additive: it only reads the finished frame and drives its
