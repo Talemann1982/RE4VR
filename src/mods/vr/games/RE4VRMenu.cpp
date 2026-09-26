@@ -340,7 +340,7 @@ struct SplashItem {
 };
 
 const SplashItem SPLASH_ITEMS[] = {
-    {"1.", "You can open the mod menu with LT + Left A (Y)."},
+    {"1.", "You can open the mod menu with LT + Left B (Y)."},
     {"2.", "Game settings that interfere with VR have been automatically disabled."},
     {"3.", "The revolver can fire. You just have to cock it first (right stick down)."},
     {"4.", "Yes AFW is beta and will be improved in the future."},
