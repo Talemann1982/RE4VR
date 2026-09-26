@@ -2335,6 +2335,27 @@ void RE4VRHolster::track_last_weapons() {
 // =====================================================================
 // Mag-Holster (Lua Z.1587-1667)
 // =====================================================================
+// [BODY-EPOCH 2026-09-22] Nach Save-Load/Tod bleibt der alte Body ansprechbar
+// (get_Valid bleibt wahr) -- die Joint-Caches haengen sonst an der Leiche.
+// NUR Zeiger verwerfen: die eigenen add_ref-Referenzen werden freigegeben (wie
+// store_slot_joint es tut), keine Engine-Aufrufe auf den alten Objekten.
+// Klone, Snapshot (m_ar) und Ladezustaende bleiben unberuehrt.
+void RE4VRHolster::drop_body_caches() {
+    m_pe = nullptr;
+
+    for (auto& s : m_slots) {
+        store_slot_joint(s, nullptr);   // gibt joint_reffed frei
+        s.joint_ok_frame = UINT64_MAX;
+    }
+
+    if (m_mag.joint != nullptr && m_mag.joint_reffed) {
+        utility::re_managed_object::release(reinterpret_cast<::REManagedObject*>(m_mag.joint));
+    }
+
+    m_mag.joint = nullptr;
+    m_mag.joint_reffed = false;
+}
+
 ::REJoint* RE4VRHolster::mag_joint() {
     const auto tf = body_tf();
 
@@ -3637,6 +3658,13 @@ void RE4VRHolster::on_frame() {
 
     // [PERF] Frame-Grenze fuer die Joint-Pruefung. Steht ganz oben.
     ++m_hol_frame;
+
+    // [BODY-EPOCH 2026-09-22] Body gewechselt (Save-Load/Tod): gemerkte
+    // Zeiger an der Leiche verwerfen, die Neu-Hol-Zweige greifen dann.
+    if (const auto ep = re4vr::body_epoch(); ep != m_body_epoch) {
+        m_body_epoch = ep;
+        drop_body_caches();
+    }
 
     if (!m_types_resolved) {
         m_types_resolved = true;

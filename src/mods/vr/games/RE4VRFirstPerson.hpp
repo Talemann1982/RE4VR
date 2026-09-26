@@ -182,6 +182,11 @@ private:
     bool is_joint_valid(::REJoint* j);
     void store_head_joint(::REJoint* j);
 
+    // [BODY-EPOCH 2026-09-22] Body gewechselt (Save-Load/Tod) -> m_head_joint
+    // loslassen (store_head_joint(nullptr): nur release); get_head_joint holt neu.
+    uint64_t m_body_epoch{0};
+    void drop_body_caches() { store_head_joint(nullptr); }
+
     // ---- Gates (Lua Z.347-361, 736-810) -------------------------------
     bool active();
     bool is_crouch_now();

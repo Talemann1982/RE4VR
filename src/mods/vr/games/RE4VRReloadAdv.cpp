@@ -31,6 +31,7 @@
 
 #include "RE4VR.hpp"
 #include "RE4VRReloadAdv.hpp"
+#include "RE4VRReloadMain.hpp"   // [WPOSE]
 
 #undef min
 #undef max
@@ -866,6 +867,11 @@ void RE4VRReloadAdv::load_cfg() {
         return;
     }
 
+    // [KFH] Keyframe-Handposen pro Waffe (fehlt der Block: alles aus).
+    if (const auto it = data.find("kf_hand"); it != data.end()) {
+        kfh_from_json(*it);
+    }
+
     // [SHELL-KEYFRAMES] eigene Bahn-Dauer laden.
     if (jhas_num(data, "shell_dur")) { shell_dur = jnum(data, "shell_dur", shell_dur); }
     if (jhas_num(data, "r9_anlauf")) { r9_anlauf = jnum(data, "r9_anlauf", r9_anlauf); }
@@ -1130,6 +1136,7 @@ void RE4VRReloadAdv::save_cfg() {
         {"push_y_by_wid", pyout},
         {"rev_insert_by_wid", riout},
         {"rev_insert_dur", rev_insert_dur},
+        {"kf_hand", kfh_to_json()},   // [KFH]
     };
 
     re4vr::json_save(CFG_PATH, d);
@@ -1272,7 +1279,518 @@ void RE4VRReloadAdv::push_apply() {
     // [BRUECKE] Der Joint-Writer liegt in reload.lua. Sobald der ganze
     // Reload-Block portiert ist, wird daraus ein direkter Aufruf des
     // Geschwister-Teils.
-    re4vr::lua_call_pose_bones("__re4_reload_apply_pose_bones", push_bones(), blend);
+    re4vr::lua_call_pose_bones("__re4_reload_apply_pose_bones",
+                               re4vr::wpose::pick("(push)", push_bones()), blend);   // [WPOSE]
+}
+
+// ============================================================================
+// [KFH 2026-09-24] Keyframe-Handposen -- Nachbau von RE9 "Push pose" / "End pose"
+//
+// Keyframe 1: ab dem Andocken klemmt die linke Hand an der Shell/Patrone, die
+// die Bahn entlanglaeuft (Versatz relativ zum Objekt), Finger "(kf1)".
+// Letzter Keyframe: Hand relativ zur WAFFE, Finger "(kfend)"; im Bahn-Fenster
+// fade_from..fade_to wird von K1 zur End-Lage uebergeblendet, nach dem
+// Einrasten end_hold gehalten und ueber out_dur ausgeblendet.
+// Das Hand-Ziel geht ueber dieselben drei Globals wie der Magazin-Push
+// (__vr_slide_hand_world_pos/rot + __vr_slide_dock_blend_factor).
+// Default AUS pro Waffe -- ohne "on" ist jede Funktion hier wirkungslos.
+// ============================================================================
+
+// Umfang: nur Waffen OHNE Magazin (Shells, Patronen, Clips, Bolzen). Erster
+// Schritt = die Shotguns der Reload-Hauptmaschine.
+bool RE4VRReloadAdv::kfh_in_scope(int32_t wid) {
+    switch (wid) {
+    case 4100: case 4101: case 4102: case 6001:   // W-870, Riot Gun, Striker, Skull Shaker
+    case 4002: case 40021:                        // Red9 Stripper-Clip / Einzelpatrone (Reload2)
+    case 61130: case 61131:                       // [KFH ADA] Samurai Edge Clip / Einzelpatrone (Reload5)
+    case 4400: case 4500: case 4600:              // [KFH 2026-09-25] SR M1903, Butterfly, Bolt Thrower (Reload2)
+    case 4502:                                    // Handcannon (Reload3)
+    case 6100:                                    // Sawed-off W-870 (Reload4)
+    case 6114:                                    // Hunting Rifle (Reload5)
+        return true;
+    default:
+        return false;
+    }
+}
+
+// [KFH ADA 2026-09-25] Adas Samurai Edge hat EIGENE Handpose-IDs (61130 Clip,
+// 61131 Einzelpatrone), faehrt aber weiter Leons Red9-Bahn (4002 / 40021).
+// Leons Handposen bleiben unter 4002 / 40021.
+int32_t RE4VRReloadAdv::kfh_path_id(int32_t kfid) {
+    if (kfid == 61130) {
+        return 4002;
+    }
+
+    if (kfid == 61131) {
+        return 40021;
+    }
+
+    return kfid;
+}
+
+const RE4VRReloadAdv::KfHand* RE4VRReloadAdv::kfh_cfg(int32_t wid) const {
+    const auto it = m_kfh.find(wid);
+
+    return (it != m_kfh.end()) ? &it->second : nullptr;
+}
+
+void RE4VRReloadAdv::kfh_begin(int32_t wid) {
+    const auto* c = kfh_cfg(wid);
+
+    // [END ALLEIN 2026-09-25] Auch nur "End" an startet: dann blendet die Hand
+    // von der Mag-in-hand-Haltung direkt zur End-Pose, ohne Keyframe-1-Pose.
+    if (!kfh_in_scope(wid) || c == nullptr || !(c->on || c->end_on)
+        || !has_shell_keys(kfh_path_id(wid))) {
+        return;
+    }
+
+    m_kfr = KfhRun{};
+    m_kfr.active = true;
+    m_kfr.wid = wid;
+    m_kfr.t0 = clock_now();
+    m_kfr.prog_t = m_kfr.t0;
+}
+
+void RE4VRReloadAdv::kfh_prog(float t) {
+    if (!m_kfr.active) {
+        return;
+    }
+
+    m_kfr.prog = std::clamp(t, 0.0f, 1.0f);
+    m_kfr.prog_t = clock_now();
+}
+
+void RE4VRReloadAdv::kfh_end() {
+    if (!m_kfr.active) {
+        return;
+    }
+
+    m_kfr.active = false;
+
+    const auto* c = kfh_cfg(m_kfr.wid);
+    auto* wtf = (m_kfh_wtf != nullptr && (clock_now() - m_kfh_wtf_t) < 0.3)
+        ? m_kfh_wtf : re4vr::lua_get_pointer("__re4_reload_weapon_tf");
+    glm::vec3 gp{};
+    glm::quat gr{};
+
+    if (c == nullptr || wtf == nullptr || !get_vec3(wtf, "get_Position", gp)
+        || !get_quat(wtf, "get_Rotation", gr)) {
+        return;
+    }
+
+    m_kfr.end_mode = c->end_on;
+
+    // Ohne End-Pose: die letzte Hand-Lage waffenlokal einfrieren und von dort
+    // ausblenden (sonst spraenge die Hand beim Einrasten).
+    if (!m_kfr.end_mode) {
+        if (!m_kfr.have_last) {
+            return;
+        }
+
+        m_kfr.frz_p = glm::conjugate(gr) * (m_kfr.last_p - gp);
+        m_kfr.frz_r = glm::normalize(glm::conjugate(gr) * m_kfr.last_r);
+    }
+
+    m_kfr.end_t0 = clock_now();
+}
+
+void RE4VRReloadAdv::kfh_cancel() {
+    m_kfr.active = false;
+    m_kfr.end_t0.reset();
+}
+
+// Hand-Ziel + Blend dieses Moments; setzt nebenbei den Finger-Blend.
+bool RE4VRReloadAdv::kfh_target(glm::vec3& p, glm::quat& r, float& b) {
+    m_kfh_fblend = 0.0f;
+    m_kfh_fend = 0.0f;
+
+    // [KFH R9] Waffe: vom fuehrenden Modul (frisch gemeldet), sonst die der
+    // Reload-Hauptmaschine.
+    const double now = clock_now();
+    auto* wtf = (m_kfh_wtf != nullptr && (now - m_kfh_wtf_t) < 0.3)
+        ? m_kfh_wtf : re4vr::lua_get_pointer("__re4_reload_weapon_tf");
+    glm::vec3 gp{};
+    glm::quat gr{};
+
+    if (wtf == nullptr || !get_vec3(wtf, "get_Position", gp) || !get_quat(wtf, "get_Rotation", gr)) {
+        return false;
+    }
+
+    const auto obj_hand = [&](int32_t wid, float tt, const KfHand& c, glm::vec3& hp,
+                              glm::quat& hr) -> bool {
+        Key k{};
+
+        if (!shell_pose_at(kfh_path_id(wid), tt, k)) {   // [KFH ADA]
+            return false;
+        }
+
+        const glm::vec3 op = gp + (gr * glm::vec3{k.x, k.y, k.z});
+        const glm::quat orr = glm::normalize(gr * quat_from_euler(k.rx, k.ry, k.rz));
+        hp = op + (orr * glm::vec3{c.px, c.py, c.pz});
+        hr = glm::normalize(orr * quat_from_euler(c.rx, c.ry, c.rz));
+
+        return true;
+    };
+
+    const auto end_hand = [&](const KfHand& c, glm::vec3& hp, glm::quat& hr) {
+        hp = gp + (gr * glm::vec3{c.epx, c.epy, c.epz});
+        hr = glm::normalize(gr * quat_from_euler(c.erx, c.ery, c.erz));
+    };
+
+    // Einstell-Schalter: Hand dauerhaft an Keyframe 1 bzw. am letzten Keyframe.
+    if (m_kfh_force != 0) {
+        const int32_t wid = kfh_ui_id();   // [KFH] ui_wid ist hier schon wieder nil (gemessen)
+        const auto* c = kfh_cfg(wid);
+
+        if (!kfh_in_scope(wid) || c == nullptr) {
+            return false;
+        }
+
+        if (m_kfh_force == 1) {
+            if (!obj_hand(wid, 0.0f, *c, p, r)) {
+                return false;
+            }
+        } else {
+            end_hand(*c, p, r);
+        }
+
+        b = 1.0f;
+        m_kfh_fblend = 1.0f;
+        m_kfh_fend = (m_kfh_force == 2) ? 1.0f : 0.0f;
+        m_kfh_fwid = wid;
+
+        return true;
+    }
+
+    if (m_kfr.active) {
+        const auto* c = kfh_cfg(m_kfr.wid);
+
+        // Kein Fortschritt mehr gemeldet = Einlegen abgebrochen (jeder Abbruch-
+        // Weg der Reload-Maschine, ohne dort einzeln einzugreifen).
+        if (c == nullptr || !(c->on || c->end_on) || (now - m_kfr.prog_t) > 0.25
+            || (now - m_kfr.t0) > 8.0) {
+            m_kfr.active = false;
+
+            if (c != nullptr && m_kfr.have_last) {
+                m_kfr.end_mode = false;
+                m_kfr.frz_p = glm::conjugate(gr) * (m_kfr.last_p - gp);
+                m_kfr.frz_r = glm::normalize(glm::conjugate(gr) * m_kfr.last_r);
+                m_kfr.end_t0 = now - static_cast<double>(c->end_hold);   // direkt ausblenden
+            }
+
+            return false;
+        }
+
+        // [END ALLEIN] Ohne Keyframe-1-Pose: Hand + Finger laufen allein ueber
+        // das Bahn-Fenster fade_from..fade_to von der Mag-in-hand-Haltung zur
+        // End-Pose (Blend 0 -> 1), ohne Fenster ueber die ganze Bahn.
+        if (!c->on) {
+            float e = m_kfr.prog;
+
+            if (c->fade_to > c->fade_from) {
+                e = std::clamp((m_kfr.prog - c->fade_from) / (c->fade_to - c->fade_from), 0.0f, 1.0f);
+            }
+
+            e = ease(e);
+            end_hand(*c, p, r);
+            b = e;
+            m_kfr.last_p = p;
+            m_kfr.last_r = r;
+            m_kfr.have_last = true;
+            m_kfh_fblend = e;
+            m_kfh_fend = 1.0f;
+            m_kfh_fwid = m_kfr.wid;
+
+            return e > 0.0f;
+        }
+
+        glm::vec3 p1{};
+        glm::quat r1{};
+
+        if (!obj_hand(m_kfr.wid, m_kfr.prog, *c, p1, r1)) {
+            return false;
+        }
+
+        float bin = 1.0f;
+
+        if (c->in_dur > 0.001f) {
+            bin = ease(std::clamp(static_cast<float>(now - m_kfr.t0) / c->in_dur, 0.0f, 1.0f));
+        }
+
+        float e = 0.0f;
+
+        if (c->end_on && c->fade_to > c->fade_from) {
+            e = ease(std::clamp((m_kfr.prog - c->fade_from) / (c->fade_to - c->fade_from), 0.0f, 1.0f));
+        }
+
+        if (e > 0.0f) {
+            glm::vec3 pe{};
+            glm::quat re{};
+            end_hand(*c, pe, re);
+            p = p1 + (pe - p1) * e;
+            r = qnlerp(r1, re, e);
+        } else {
+            p = p1;
+            r = r1;
+        }
+
+        b = bin;
+        m_kfr.last_p = p;
+        m_kfr.last_r = r;
+        m_kfr.have_last = true;
+        m_kfh_fblend = bin;
+        m_kfh_fend = e;
+        m_kfh_fwid = m_kfr.wid;
+
+        return true;
+    }
+
+    if (m_kfr.end_t0.has_value()) {
+        const auto* c = kfh_cfg(m_kfr.wid);
+
+        if (c == nullptr) {
+            m_kfr.end_t0.reset();
+            return false;
+        }
+
+        const float el = static_cast<float>(now - *m_kfr.end_t0);
+        const float hold = m_kfr.end_mode ? c->end_hold : 0.0f;
+        const float out = std::max(c->out_dur, 0.001f);
+
+        if (el >= hold + out) {
+            m_kfr.end_t0.reset();
+            return false;
+        }
+
+        b = (el < hold) ? 1.0f : 1.0f - ease(std::clamp((el - hold) / out, 0.0f, 1.0f));
+
+        if (m_kfr.end_mode) {
+            end_hand(*c, p, r);
+            m_kfh_fend = 1.0f;
+        } else {
+            p = gp + (gr * m_kfr.frz_p);
+            r = glm::normalize(gr * m_kfr.frz_r);
+            m_kfh_fend = 0.0f;
+        }
+
+        m_kfh_fblend = b;
+        m_kfh_fwid = m_kfr.wid;
+
+        return b > 0.0f;
+    }
+
+    return false;
+}
+
+bool RE4VRReloadAdv::kfh_publish() {
+    glm::vec3 p{};
+    glm::quat r{};
+    float b = 0.0f;
+
+    if (!kfh_target(p, r, b) || b <= 0.001f) {
+        return false;
+    }
+
+    re4vr::lua_set_vec3("__vr_slide_hand_world_pos", p);
+    re4vr::lua_set_quat("__vr_slide_hand_world_rot", r);
+    re4vr::lua_set_number("__vr_slide_dock_blend_factor", b);
+
+    return true;
+}
+
+// Finger: "(kf1)" bzw. "(kfend)" der Waffe, ohne eigenen Satz die
+// Mag-in-hand-Finger. Laeuft in den spaeten Paessen (wie push_apply).
+void RE4VRReloadAdv::kfh_fingers() {
+    glm::vec3 p{};
+    glm::quat r{};
+    float b = 0.0f;
+
+    if (!kfh_target(p, r, b) || m_kfh_fblend <= 0.001f) {
+        return;
+    }
+
+    auto* m = RE4VRReloadMain::instance();
+
+    if (m == nullptr) {
+        return;
+    }
+
+    const int32_t wid = m_kfh_fwid;
+    re4vr::wpose::Bones base{};
+    m->kfh_base_bones(wid, base);
+
+    re4vr::wpose::Bones k1{};
+
+    if (!re4vr::wpose::own(wid, "(kf1)", &k1)) {
+        k1 = base;
+    }
+
+    re4vr::wpose::Bones ke{};
+
+    if (!re4vr::wpose::own(wid, "(kfend)", &ke)) {
+        ke = k1;
+    }
+
+    re4vr::wpose::Bones out = k1;
+
+    if (m_kfh_fend > 0.0f) {
+        for (const auto& e : ke) {
+            const auto it = out.find(e.first);
+            out[e.first] = (it != out.end()) ? qnlerp(it->second, e.second, m_kfh_fend) : e.second;
+        }
+    }
+
+    const bool wrote = !out.empty() && m->apply_pose_bones(out, m_kfh_fblend);
+
+    // [KFH-DIAG] Messpunkt fuer die Lua-Sonde: was hier geschrieben wird.
+    {
+        char buf[200];
+        const auto it = out.find("L_IndexF1");
+        const glm::quat q = (it != out.end()) ? it->second : glm::quat{0.0f, 0.0f, 0.0f, 0.0f};
+        std::snprintf(buf, sizeof(buf), "wid=%d fb=%.2f fe=%.2f n=%d own=%d wrote=%d idx=%.3f,%.3f,%.3f,%.3f",
+                      wid, m_kfh_fblend, m_kfh_fend, static_cast<int>(out.size()),
+                      re4vr::wpose::own(wid, "(kf1)") ? 1 : 0, wrote ? 1 : 0, q.w, q.x, q.y, q.z);
+        re4vr::lua_set_string("__re4_kfh_fdbg", buf);
+    }
+}
+
+// Force: Shell/Patrone an Keyframe 1 bzw. am letzten Keyframe parken und
+// sichtbar halten (derselbe Weg wie die Keyframe-Vorschau).
+void RE4VRReloadAdv::kfh_force_park() {
+    if (m_kfh_force == 0) {
+        return;
+    }
+
+    const int32_t wid = kfh_ui_id();   // [KFH] ui_wid ist hier schon wieder nil (gemessen)
+
+    // Nur die Shotguns der Reload-Hauptmaschine parken hier ihren Waffen-Joint;
+    // Clone-Waffen (Red9 ...) parkt ihr eigenes Modul ueber kfh_force_key.
+    // [KFH 2026-09-25] + Adas Sawed-off (Reload4): sichtbar ist dort ebenfalls
+    // der native Shell-Joint, nicht der Klon (gemeldet: Klon unsichtbar).
+    if (!(wid == 4100 || wid == 4101 || wid == 4102 || wid == 6001 || wid == 6100)) {
+        return;
+    }
+
+    Key k{};
+
+    if (shell_pose_at(wid, (m_kfh_force == 1) ? 0.0f : 1.0f, k)) {
+        preview_apply_pose(k);
+    }
+}
+
+void RE4VRReloadAdv::kfh_set_weapon(::REManagedObject* tf) {
+    m_kfh_wtf = tf;
+    m_kfh_wtf_t = clock_now();
+}
+
+bool RE4VRReloadAdv::kfh_force_key(int32_t kfid, Key& out) {
+    if (m_kfh_force == 0 || kfh_cfg(kfid) == nullptr) {
+        return false;
+    }
+
+    return shell_pose_at(kfh_path_id(kfid), (m_kfh_force == 1) ? 0.0f : 1.0f, out);   // [KFH ADA]
+}
+
+void RE4VRReloadAdv::kfh_set_base(int32_t kfid, const re4vr::wpose::Bones& b) {
+    m_kfh_base[kfid] = b;
+}
+
+const re4vr::wpose::Bones* RE4VRReloadAdv::kfh_base(int32_t kfid) const {
+    const auto it = m_kfh_base.find(kfid);
+
+    return (it != m_kfh_base.end()) ? &it->second : nullptr;
+}
+
+int32_t RE4VRReloadAdv::kfh_ui_id() {
+    const int32_t w = get_equip_wid().value_or(0);
+
+    const bool single = re4vr::lua_get_string("__re4_r9_kf_mode") == "single";
+
+    if (w == 4002) {   // Red9
+        return single ? 40021 : 4002;
+    }
+
+    if (w == 6113) {   // [KFH ADA] Samurai Edge: eigene Handposen, Red9-Bahn
+        return single ? 61131 : 61130;
+    }
+
+    return w;
+}
+
+// In den Adv-Paessen NACH allen Reload-Modulen veroeffentlichen -- Module wie
+// Reload2 leeren die Dock-Globals selbst, solange ihr eigener Dock nicht
+// laeuft. Fallende Flanke: einmal leeren + Ausfade-Zeitstempel.
+void RE4VRReloadAdv::kfh_publish_adv() {
+    const bool on = kfh_publish();
+
+    if (on) {
+        re4vr::lua_set_nil("__re4_reload_lexit_t");
+        re4vr::lua_set_bool("__re4_kfh_active", true);   // Motion: keine Stuetzhand-Pose drueber
+    } else if (m_kfh_pub_prev) {
+        re4vr::lua_set_nil("__re4_kfh_active");
+        re4vr::lua_set_nil("__vr_slide_hand_world_pos");
+        re4vr::lua_set_nil("__vr_slide_hand_world_rot");
+        re4vr::lua_set_number("__vr_slide_dock_blend_factor", 0.0);
+        re4vr::lua_set_number("__re4_reload_lexit_t", clock_now());
+    }
+
+    m_kfh_pub_prev = on;
+}
+
+nlohmann::json RE4VRReloadAdv::kfh_to_json() const {
+    nlohmann::json o = nlohmann::json::object();
+
+    for (const auto& e : m_kfh) {
+        const auto& c = e.second;
+        o[std::to_string(e.first)] = {
+            {"on", c.on}, {"in_dur", c.in_dur},
+            {"px", c.px}, {"py", c.py}, {"pz", c.pz},
+            {"rx", c.rx}, {"ry", c.ry}, {"rz", c.rz},
+            {"end_on", c.end_on},
+            {"epx", c.epx}, {"epy", c.epy}, {"epz", c.epz},
+            {"erx", c.erx}, {"ery", c.ery}, {"erz", c.erz},
+            {"fade_from", c.fade_from}, {"fade_to", c.fade_to},
+            {"end_hold", c.end_hold}, {"out_dur", c.out_dur},
+        };
+    }
+
+    return o;
+}
+
+void RE4VRReloadAdv::kfh_from_json(const nlohmann::json& j) {
+    if (!j.is_object()) {
+        return;
+    }
+
+    m_kfh.clear();
+
+    for (const auto& item : j.items()) {
+        int32_t wid = 0;
+        const auto& v = item.value();
+
+        if (!key_to_wid(item.key(), wid) || !v.is_object()) {
+            continue;
+        }
+
+        KfHand c{};
+        const auto jb = [&](const char* k, bool def) {
+            const auto it = v.find(k);
+            return (it != v.end() && it->is_boolean()) ? it->get<bool>() : def;
+        };
+
+        c.on = jb("on", c.on);
+        c.in_dur = jnum(v, "in_dur", c.in_dur);
+        c.px = jnum(v, "px", c.px); c.py = jnum(v, "py", c.py); c.pz = jnum(v, "pz", c.pz);
+        c.rx = jnum(v, "rx", c.rx); c.ry = jnum(v, "ry", c.ry); c.rz = jnum(v, "rz", c.rz);
+        c.end_on = jb("end_on", c.end_on);
+        c.epx = jnum(v, "epx", c.epx); c.epy = jnum(v, "epy", c.epy); c.epz = jnum(v, "epz", c.epz);
+        c.erx = jnum(v, "erx", c.erx); c.ery = jnum(v, "ery", c.ery); c.erz = jnum(v, "erz", c.erz);
+        c.fade_from = jnum(v, "fade_from", c.fade_from);
+        c.fade_to = jnum(v, "fade_to", c.fade_to);
+        c.end_hold = jnum(v, "end_hold", c.end_hold);
+        c.out_dur = jnum(v, "out_dur", c.out_dur);
+        m_kfh[wid] = c;
+    }
 }
 
 // Zeitfaktor -> Multiplikator fuer Dauern (Speed 1.0 = unveraendert;
@@ -1817,6 +2335,7 @@ void RE4VRReloadAdv::tick_preview() {
 
 void RE4VRReloadAdv::on_lock_scene_pre() {
     push_apply();
+    kfh_publish_adv();   // [KFH]
 }
 
 void RE4VRReloadAdv::on_late_update() {
@@ -1824,14 +2343,32 @@ void RE4VRReloadAdv::on_late_update() {
     eject_preview_apply();   // Lua Z.485
     push_apply();            // Lua Z.853
     tick_preview();          // Lua Z.1046
+    kfh_force_park();        // [KFH]
+    kfh_fingers();           // [KFH]
+    kfh_publish_adv();       // [KFH]
+}
+
+// [WPOSE] "Erzwingen" aus dem Handposen-Baum
+void RE4VRReloadAdv::wpose_force() {
+    if (auto* m = RE4VRReloadMain::instance(); m != nullptr) {
+        m->wpose_force_apply();
+    }
 }
 
 void RE4VRReloadAdv::on_update_joint_expression() {
     push_apply();
+    // [KFH] Parken im LETZTEN Pass wie insert_repos_late -- gemessen: nur in
+    // LateUpdate/BeginRendering geparkt stand die Shell bei 0/0.047/0.163
+    // statt an Keyframe 1 (0/0.022/0.152).
+    kfh_force_park();
+    kfh_fingers();   // [KFH]
+    kfh_publish_adv();   // [KFH]
+    wpose_force();   // [WPOSE]
 }
 
 void RE4VRReloadAdv::on_begin_rendering_pre() {
     push_apply();
+    kfh_publish_adv();   // [KFH]
 }
 
 // [PASS-FIX 2026-07-21, per Probe-Log] Die Push-Pose WURDE geschrieben, war aber
@@ -1843,6 +2380,10 @@ void RE4VRReloadAdv::on_begin_rendering() {
     eject_preview_apply();   // Lua Z.486
     push_apply();            // Lua Z.856
     tick_preview();          // Lua Z.1047
+    kfh_force_park();        // [KFH]
+    kfh_fingers();           // [KFH]
+    kfh_publish_adv();       // [KFH]
+    wpose_force();           // [WPOSE] zuletzt: Erzwingen gewinnt
 }
 
 // ============================================================================
@@ -1857,6 +2398,11 @@ void RE4VRReloadAdv::draw_dev_ui() {
 
     if (!ImGui::TreeNode("RE4VR - Reload Adv")) {
         return;
+    }
+
+    // [WPOSE 2026-09-24] Handposen pro Waffe
+    if (auto* m = RE4VRReloadMain::instance(); m != nullptr) {
+        m->draw_wpose_ui();
     }
 
     const int32_t wid = get_equip_wid().value_or(4004);
@@ -2307,6 +2853,168 @@ void RE4VRReloadAdv::draw_dev_ui() {
 
     if (ch) {
         save_cfg();
+    }
+
+    ImGui::TreePop();
+}
+
+// ============================================================================
+// [KFH 2026-09-24] Dev-Baum "RE4VR - Keyframes"
+// ============================================================================
+void RE4VRReloadAdv::draw_kf_ui() {
+    if (!ImGui::TreeNode("RE4VR - Keyframes")) {
+        return;
+    }
+
+    // Red9: derselbe Modus-Schalter wie in "Shell-Insert Keyframes" (Reload Adv)
+    if (get_equip_wid().value_or(0) == 4002 || get_equip_wid().value_or(0) == 6113) {
+        if (ImGui::Checkbox("Modus: Einzelpatrone (AUS = Stripper-Clip)##kfhr9", &r9_single)) {
+            re4vr::lua_set_string("__re4_r9_kf_mode", r9_single ? "single" : "strip");
+        }
+    }
+
+    const int32_t wid = kfh_ui_id();
+
+    ImGui::Text("Waffe: %d", wid);
+
+    if (!kfh_in_scope(wid)) {
+        ImGui::Text("Diese Waffe ist nicht dabei");
+        m_kfh_force = 0;
+        ImGui::TreePop();
+        return;
+    }
+
+    if (!has_shell_keys(kfh_path_id(wid))) {   // [KFH ADA]
+        ImGui::Text("Keine Keyframe-Bahn fuer diese Waffe");
+    }
+
+    auto* m = RE4VRReloadMain::instance();
+    KfHand c = (kfh_cfg(wid) != nullptr) ? *kfh_cfg(wid) : KfHand{};
+    bool ch = false;
+    bool save = false;
+
+    // Copy ALL: beide Posen samt Einstellungen einer anderen Waffe (keine Bahn)
+    {
+        static int32_t src = -1;
+        const std::string cur = (src >= 0) ? std::to_string(src) : "-";
+
+        if (ImGui::BeginCombo("Copy ALL from##kfhca", cur.c_str())) {
+            for (const auto& e : m_kfh) {
+                if (e.first != wid && ImGui::Selectable(std::to_string(e.first).c_str(), e.first == src)) {
+                    src = e.first;
+                }
+            }
+
+            ImGui::EndCombo();
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Copy ALL##kfhcab") && src >= 0 && src != wid && kfh_cfg(src) != nullptr) {
+            c = *kfh_cfg(src);
+            ch = true;
+            save = true;
+
+            for (const char* n : {"(kf1)", "(kfend)"}) {
+                re4vr::wpose::Bones b{};
+
+                if (re4vr::wpose::own(src, n, &b)) {
+                    re4vr::wpose::set_own(wid, n, b);
+                } else {
+                    re4vr::wpose::drop_own(wid, n);
+                }
+            }
+        }
+    }
+
+    const auto drag = [&](const char* label, float* v, float speed, float lo, float hi, const char* fmt) {
+        if (ImGui::DragFloat(label, v, speed, lo, hi, fmt)) {
+            ch = true;
+        }
+
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            save = true;
+        }
+    };
+
+    if (ImGui::TreeNode("Keyframe 1 (Andocken)##kfh1")) {
+        if (ImGui::Checkbox("An##kfh1on", &c.on)) {
+            ch = true;
+            save = true;
+        }
+
+        bool f1 = (m_kfh_force == 1);
+
+        if (ImGui::Checkbox("Force Keyframe 1##kfh1f", &f1)) {
+            m_kfh_force = f1 ? 1 : 0;
+        }
+
+        drag("Einblenden s##kfh1in", &c.in_dur, 0.005f, 0.0f, 1.0f, "%.3f");
+        static bool s_g1 = false;   // Grob: 10x groessere Schritte (nicht gespeichert)
+        ImGui::Text("Hand relativ zur Shell");
+        ImGui::SameLine();
+        ImGui::Checkbox("Grob##kfh1g", &s_g1);
+        const float gm1 = s_g1 ? 10.0f : 1.0f;
+        drag("X##kfh1", &c.px, 0.001f * gm1, -0.5f, 0.5f, "%.4f");
+        drag("Y##kfh1", &c.py, 0.001f * gm1, -0.5f, 0.5f, "%.4f");
+        drag("Z##kfh1", &c.pz, 0.001f * gm1, -0.5f, 0.5f, "%.4f");
+        drag("Rot X##kfh1", &c.rx, 0.5f * gm1, -180.0f, 180.0f, "%.1f");
+        drag("Rot Y##kfh1", &c.ry, 0.5f * gm1, -180.0f, 180.0f, "%.1f");
+        drag("Rot Z##kfh1", &c.rz, 0.5f * gm1, -180.0f, 180.0f, "%.1f");
+
+        if (m != nullptr) {
+            m->kfh_finger_ui(wid, "(kf1)", "Kopieren von Mag-in-hand-Pose", false);
+        }
+
+        ImGui::TreePop();
+    }
+
+    if (ImGui::TreeNode("Letzter Keyframe (End)##kfhe")) {
+        if (ImGui::Checkbox("An##kfheon", &c.end_on)) {
+            ch = true;
+            save = true;
+        }
+
+        bool f2 = (m_kfh_force == 2);
+
+        if (ImGui::Checkbox("Force End##kfhef", &f2)) {
+            m_kfh_force = f2 ? 2 : 0;
+        }
+
+        static bool s_ge = false;   // Grob: 10x groessere Schritte (nicht gespeichert)
+        ImGui::Text("Hand relativ zur Waffe");
+        ImGui::SameLine();
+        ImGui::Checkbox("Grob##kfheg", &s_ge);
+        const float gme = s_ge ? 10.0f : 1.0f;
+        drag("X##kfhe", &c.epx, 0.001f * gme, -0.5f, 0.5f, "%.4f");
+        drag("Y##kfhe", &c.epy, 0.001f * gme, -0.5f, 0.5f, "%.4f");
+        drag("Z##kfhe", &c.epz, 0.001f * gme, -0.5f, 0.5f, "%.4f");
+        drag("Rot X##kfhe", &c.erx, 0.5f * gme, -180.0f, 180.0f, "%.1f");
+        drag("Rot Y##kfhe", &c.ery, 0.5f * gme, -180.0f, 180.0f, "%.1f");
+        drag("Rot Z##kfhe", &c.erz, 0.5f * gme, -180.0f, 180.0f, "%.1f");
+        drag("Ueberblenden ab (Bahn 0-1)##kfhff", &c.fade_from, 0.005f, 0.0f, 1.0f, "%.3f");
+        drag("Ueberblenden bis (Bahn 0-1)##kfhft", &c.fade_to, 0.005f, 0.0f, 1.0f, "%.3f");
+        drag("Halten s##kfheh", &c.end_hold, 0.005f, 0.0f, 2.0f, "%.3f");
+        drag("Ausblenden s##kfheo", &c.out_dur, 0.005f, 0.0f, 2.0f, "%.3f");
+
+        if (m != nullptr) {
+            m->kfh_finger_ui(wid, "(kfend)", "Kopieren von Keyframe-1-Pose", true);
+        }
+
+        ImGui::TreePop();
+    }
+
+    if (ch) {
+        m_kfh[wid] = c;
+    }
+
+    if (save) {
+        save_cfg();
+
+        // Finger-Kopien aus Copy ALL liegen im [WPOSE]-Speicher der Reload-JSON.
+        if (m != nullptr) {
+            m->kfh_save();
+        }
     }
 
     ImGui::TreePop();

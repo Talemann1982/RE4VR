@@ -1579,6 +1579,17 @@ void RE4VRMaterials::apply_extra_mats(bool off) {
     return m_lamp_go_cache;
 }
 
+// [BODY-EPOCH 2026-09-22] Die Taschenlampe ac0000_00 haengt unter dem Body
+// (ch0a0z0_body). Nach Save-Load/Tod bleibt der alte GO get_Valid -- die
+// Probe unten faellt dann nicht durch. Nur den eigenen Handle loslassen
+// (release wie on_lua_state_destroyed); m_fl_mesh_hidden bleibt, der
+// Zweig in on_frame arbeitet damit auf der neu gefundenen Lampe weiter.
+// Der vorhandene Adress-Reset in materials_tick (m_force_full) bleibt
+// unberuehrt.
+void RE4VRMaterials::drop_body_caches() {
+    store_fl_go(nullptr);
+}
+
 ::REManagedObject* RE4VRMaterials::get_flashlight_go() {
     // Lua Z.892-908. Fallback, wenn motions __re4_fl_mesh nicht gecacht ist.
     // Sucht FEST unter "ch0a0z0_body" -- greift also nur bei Leon (1:1 wie
@@ -1873,6 +1884,13 @@ void RE4VRMaterials::draw_dev_ui() {
 
 void RE4VRMaterials::on_frame() {
     re4vr::trace("RE4VRMaterials", "on_frame");
+
+    // [BODY-EPOCH 2026-09-22] vor allen Cache-Nutzern dieses Ticks
+    if (re4vr::body_epoch() != m_body_epoch) {
+        m_body_epoch = re4vr::body_epoch();
+        drop_body_caches();
+    }
+
     // Lua Z.1004-1160.
     // Luas Spielpruefung (Z.8, reframework:get_game_name() ~= "re4") ist eine
     // EINMALIGE Pruefung beim Laden, kein HMD-Test -- hier erledigt sie der

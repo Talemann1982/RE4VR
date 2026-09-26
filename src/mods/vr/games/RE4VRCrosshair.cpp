@@ -330,6 +330,7 @@ constexpr const char* HUD_CFG_PATH = "re4_vr/re4_vr_hand_huds.json";
 constexpr const char* LASER_CFG_PATH = "re4_vr/re4_vr_laser.json";
 
 constexpr const char* RETICLE_DOT = "Gui_ui2040";
+constexpr const char* RETICLE_CENTER_DOT = "Gui_ui2041";   // [DOT_CROSSHAIR] "Mittel-Dot"
 constexpr const char* RETICLE_HIDE = "Gui_ui2042";   // reticle_hide, 1 Eintrag
 constexpr float MIN_SCALE = 0.3f;
 constexpr float MAX_SCALE = 0.94f;
@@ -484,9 +485,11 @@ void RE4VRCrosshair::load_cfg() {
 
         b("bullet_hook", m_cfg.bullet_hook);
         b("crosshair_off", m_cfg.crosshair_off);
+        b("dot_crosshair", m_cfg.dot_crosshair);
         b("reticle_color", m_cfg.reticle_color);
         b("force_reticle_concentrate", m_cfg.force_reticle_concentrate);
         f("reticle_r", m_cfg.reticle_r);
+        f("dot_size", m_cfg.dot_size);
         f("reticle_g", m_cfg.reticle_g);
         f("reticle_b", m_cfg.reticle_b);
         f("concentrate_ratio", m_cfg.concentrate_ratio);
@@ -507,6 +510,8 @@ void RE4VRCrosshair::save_cfg() {
     nlohmann::json j;
     j["bullet_hook"] = m_cfg.bullet_hook;
     j["crosshair_off"] = m_cfg.crosshair_off;
+    j["dot_crosshair"] = m_cfg.dot_crosshair;
+    j["dot_size"] = m_cfg.dot_size;
     j["reticle_color"] = m_cfg.reticle_color;
     j["reticle_r"] = m_cfg.reticle_r;
     j["reticle_g"] = m_cfg.reticle_g;
@@ -2156,6 +2161,39 @@ bool RE4VRCrosshair::hud_state_empty() {
     return m_hud_empty_val;
 }
 
+// ============================================================================
+// [HUD INVENTAR 2026-09-25, Ansage des Users] Im Inventar (Koffer) flackerte
+// die Hand-HUD-Gruppe bei Messer / leeren Haenden. Loesung: solange der Koffer
+// offen ist, fassen wir die Gruppe GAR NICHT an -- kein Pin, kein Ausblenden.
+// Nur der Koffer, keine anderen Menues. Erkennung wie RE4VRUi::is_inventory_open
+// (AttacheCaseManager.get_IsAttacheCaseBusy), kurz gecacht.
+// ============================================================================
+bool RE4VRCrosshair::hud_inventory_open() {
+    const double now = std::chrono::duration<double>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+
+    if (now - m_hud_inv_t < 0.1) {
+        return m_hud_inv_val;
+    }
+
+    m_hud_inv_t = now;
+    m_hud_inv_val = false;
+
+    auto* cm = sdk::get_managed_singleton<::REManagedObject>("chainsaw.AttacheCaseManager");
+
+    if (cm == nullptr) {
+        return false;
+    }
+
+    bool busy = false;
+
+    if (re4vr::try_call<bool>(cm, "get_IsAttacheCaseBusy", busy)) {
+        m_hud_inv_val = busy;
+    }
+
+    return m_hud_inv_val;
+}
+
 void RE4VRCrosshair::apply_hand_hud(::REManagedObject* game_object) {
     const auto hand = re4vr::lua_get_vec3("__vr_rh_world");
     const auto hrot = re4vr::lua_get_quat("__vr_rh_rot");
@@ -2287,6 +2325,12 @@ bool RE4VRCrosshair::on_pre_gui_draw_element(REComponent* gui_element, void* pri
         const auto it = m_hud.guis.find(name);
 
         if (it != m_hud.guis.end() && it->second) {
+            // [HUD INVENTAR] Koffer offen -> loslassen: das Spiel zeichnet
+            // die Gruppe selbst, wir pinnen und verstecken nichts.
+            if (hud_inventory_open()) {
+                return true;
+            }
+
             if (m_hud.hide_hud) {
                 return false;
             }
@@ -2311,7 +2355,15 @@ bool RE4VRCrosshair::on_pre_gui_draw_element(REComponent* gui_element, void* pri
         }
     }
 
-    if (name != RETICLE_DOT) {
+    // [DOT_CROSSHAIR 26.09.2026 -- Ansage des Users] "Enable Dot Crosshair": der Mittel-Dot
+    // Gui_ui2041 wird 1:1 wie das native Reticle behandelt (Raycast-Lage, Farbe, Groesse je Waffe,
+    // Laser/Crosshair-aus/Zielen), das native Gui_ui2040 bleibt dann aus. Scope-Ausblendung
+    // fuer 2041 macht RE4VRUi (wie fuer 2040).
+    if (m_cfg.dot_crosshair && name == RETICLE_DOT) {
+        return false;
+    }
+
+    if (name != (m_cfg.dot_crosshair ? RETICLE_CENTER_DOT : RETICLE_DOT)) {
         return true;
     }
 
@@ -2374,6 +2426,32 @@ bool RE4VRCrosshair::on_pre_gui_draw_element(REComponent* gui_element, void* pri
 
                 clear_pending(context, true);
             }
+
+            // [DOT_FADE 26.09.2026] Belegt (zzz_re4_dotcrosshair_sonde): beim Zielen spielt das Spiel
+            // auf "main" EXIT -> "c_color" blendet in ~70 ms auf Alpha 0 und wird unsichtbar (HIDE),
+            // beim Loslassen ENTER. Im Dot-Modus ist der Mittel-Dot aber genau DANN das Fadenkreuz ->
+            // jedes Kind von "main" jeden Frame wieder sichtbar und voll deckend.
+            if (m_cfg.dot_crosshair) {
+                int32_t guard = 0;
+
+                for (auto* ch = re4vr::call_safe<::REManagedObject*>(root, "get_Child");
+                     ch != nullptr && guard < 16;
+                     ch = re4vr::call_safe<::REManagedObject*>(ch, "get_Next"), ++guard) {
+                    re4vr::call_safe<void*>(ch, "set_Visible", true);
+
+                    if (auto* mc = find_method(ch, "set_ColorScale")) {
+                        auto context = sdk::get_thread_context();
+                        __declspec(align(16)) glm::vec4 one{1.0f, 1.0f, 1.0f, 1.0f};
+
+                        try {
+                            mc->call_safe<void*>(context, ch, &one);
+                        } catch (...) {
+                        }
+
+                        clear_pending(context, true);
+                    }
+                }
+            }
         }
     }
 
@@ -2408,7 +2486,10 @@ bool RE4VRCrosshair::on_pre_gui_draw_element(REComponent* gui_element, void* pri
     }
 
     // Per-Waffe Groessen-Multiplikator (1.0 = unveraendert).
-    if (m_current_weapon_id.has_value()) {
+    // [DOT_CROSSHAIR] Der Mittel-Dot hat EINE Groesse fuer alle Waffen.
+    if (m_cfg.dot_crosshair) {
+        scale_distance *= m_cfg.dot_size;
+    } else if (m_current_weapon_id.has_value()) {
         const auto it = m_cfg.reticle_scale.find(std::to_string(*m_current_weapon_id));
 
         if (it != m_cfg.reticle_scale.end()) {
@@ -2978,6 +3059,25 @@ void RE4VRCrosshair::draw_public_crosshair_off() {
     // dieselben 8 px wie zwischen den Schaltern in "Miscellaneous".
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, g_framework->menu_px(8.0f)));
 
+    // [SIZE_OBEN 26.09.2026 -- Ansage des Users] "Crosshair Size" (je Waffe, nur ohne Dot) steht
+    // ueber "Enable Dot Crosshair" -- vorher unter der Farbauswahl (RE4VRMenu::draw_public).
+    draw_public_reticle_size();
+
+    // [DOT_CROSSHAIR 26.09.2026 -- Ansage des Users] ueber "Disable Crosshair".
+    bool dot = m_cfg.dot_crosshair;
+
+    if (g_framework->draw_menu_checkbox("Enable Dot Crosshair", &dot)) {
+        m_cfg.dot_crosshair = dot;
+        save_cfg();
+    }
+
+    // [DOT_CROSSHAIR] Eigene Groesse nur mit Dot; die Groesse je Waffe erscheint nur ohne Dot.
+    if (m_cfg.dot_crosshair) {
+        if (ImGui::SliderFloat("Dot Crosshair Size", &m_cfg.dot_size, 0.25f, 4.0f, "%.2f")) {
+            save_cfg();
+        }
+    }
+
     if (g_framework->draw_menu_checkbox("Disable Crosshair", &v)) {
         m_cfg.crosshair_off = v;
         save_cfg();
@@ -3063,7 +3163,8 @@ void RE4VRCrosshair::draw_public_reticle_color() {
 }
 
 void RE4VRCrosshair::draw_public_reticle_size() {
-    if (!m_current_weapon_id.has_value()) {
+    // [DOT_CROSSHAIR] Mit Dot gilt "Dot Crosshair Size" (unter dem Dot-Schalter).
+    if (m_cfg.dot_crosshair || !m_current_weapon_id.has_value()) {
         return;
     }
 

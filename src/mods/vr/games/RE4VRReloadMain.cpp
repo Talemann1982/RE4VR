@@ -17,6 +17,7 @@
 #include <fstream>
 
 #include <imgui.h>
+#include <glm/gtc/quaternion.hpp>   // [WPOSE] eulerAngles
 
 #include <sdk/RETypeDB.hpp>
 #include <sdk/RETypes.hpp>
@@ -1151,6 +1152,15 @@ void RE4VRReloadMain::load_cfg() {
         read_poses(*it);
     }
 
+    // [WPOSE] Handposen pro Waffe
+    if (const auto it = data.find("weapon_poses"); it != data.end()) {
+        re4vr::wpose::from_json(*it);
+    }
+
+    if (const auto it = data.find("weapon_end"); it != data.end()) {
+        re4vr::wpose::end_from_json(*it);
+    }
+
     // 2) neue Captures aus gestures.json importieren (gestures = Capture-Tool).
     // Die gestures-Version gewinnt (frischester Capture).
     {
@@ -1315,6 +1325,8 @@ void RE4VRReloadMain::save_cfg() {
         {"shotgun_ratio_wid", sratio_w}, {"poses", poses},
         {"rotary", rotcfg}, {"shell_parts", sparts},
         {"shell_clone", sclone}, {"dock_port", dpout},
+        {"weapon_poses", re4vr::wpose::to_json()},   // [WPOSE]
+        {"weapon_end", re4vr::wpose::end_to_json()},  // [END_POSE]
     };
 
     re4vr::json_save(CFG_PATH, d);
@@ -1600,9 +1612,35 @@ bool RE4VRReloadMain::apply_pose(const std::string& name, float blend) {
         return true;
     }
 
-    write_pose(map, it->second.bones, blend);
+    write_pose(map, re4vr::wpose::pick(name, it->second.bones), blend);   // [WPOSE]
 
     return true;
+}
+
+// [END_POSE] Pose `base` unter eigenem Namen `alias` -- die Pro-Waffe-Fassung
+// von `alias` gewinnt, sonst die Bones von `base`.
+bool RE4VRReloadMain::apply_pose_as(const std::string& alias, const std::string& base, float blend) {
+    const auto it = m_poses.find(base);
+
+    if (it == m_poses.end() || it->second.bones.empty()) {
+        return false;
+    }
+
+    return apply_pose_bones(re4vr::wpose::pick(alias, it->second.bones), blend);
+}
+
+// [KFH 2026-09-25] Bones einer Pose ueber den Namen (inkl. Pro-Waffe-Fassung)
+// -- fuer die Mag-in-hand-Basis der Keyframe-Handposen aus anderen Modulen.
+bool RE4VRReloadMain::pose_bones(const std::string& name, re4vr::wpose::Bones& out) {
+    const auto it = m_poses.find(name);
+
+    if (it == m_poses.end() || it->second.bones.empty()) {
+        return false;
+    }
+
+    out = re4vr::wpose::pick(name, it->second.bones);
+
+    return !out.empty();
 }
 
 // [KNIFE_HAND] Externe Pose (Bone-Dict DIREKT, ohne Namen).
@@ -1633,6 +1671,387 @@ std::vector<std::string> RE4VRReloadMain::pose_names() const {
     std::sort(t.begin(), t.end());
 
     return t;
+}
+
+// ============================================================================
+// [WPOSE 2026-09-24] Handposen pro Waffe -- Menue + Erzwingen
+// ============================================================================
+namespace {
+// Grad-Anzeige je Bone; einmal aus dem Quaternion gelesen, danach nur noch
+// vom Regler geschrieben (sonst springt der Euler-Rueckweg beim Ziehen).
+std::unordered_map<std::string, glm::vec3> g_wpose_deg{};
+
+std::string wpose_key(int32_t wid, const std::string& name, const std::string& bone) {
+    return std::to_string(wid) + "|" + name + "|" + bone;
+}
+
+void wpose_deg_clear() {
+    g_wpose_deg.clear();
+}
+} // namespace
+
+void RE4VRReloadMain::wpose_force_apply() {
+    int32_t fw = -1;
+    std::string fn{};
+
+    if (!re4vr::wpose::force(fw, fn)) {
+        return;
+    }
+
+    const auto wid = re4vr::fc::equip_wid();
+
+    if (!wid.has_value() || *wid != fw) {
+        return;
+    }
+
+    re4vr::wpose::Bones b{};
+
+    if (!re4vr::wpose::own(fw, fn, &b) && !re4vr::wpose::base(fn, b)) {
+        return;
+    }
+
+    apply_pose_bones(b, 1.0f);
+}
+
+void RE4VRReloadMain::draw_wpose_ui() {
+    if (!ImGui::TreeNode("Handposen (Waffe in der Hand)")) {
+        return;
+    }
+
+    const auto ew = re4vr::fc::equip_wid();
+
+    if (!ew.has_value() || *ew < 0) {
+        ImGui::Text("Keine Waffe");
+        ImGui::TreePop();
+        return;
+    }
+
+    const int32_t wid = *ew;
+    bool save = false;
+
+    ImGui::Text("Waffe: %d", wid);
+
+    // Copy ALL: alle eigenen Posen einer anderen Waffe (Keyframes nicht)
+    {
+        static int32_t src = -1;
+        const auto list = re4vr::wpose::wids_with_own();
+        const std::string cur = (src >= 0) ? std::to_string(src) : "-";
+
+        if (ImGui::BeginCombo("Copy ALL from##wpca", cur.c_str())) {
+            for (const auto w : list) {
+                if (w == wid) {
+                    continue;
+                }
+
+                if (ImGui::Selectable(std::to_string(w).c_str(), w == src)) {
+                    src = w;
+                }
+            }
+
+            ImGui::EndCombo();
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Copy ALL##wpcab") && src >= 0 && src != wid) {
+            re4vr::wpose::copy_all(src, wid);
+            wpose_deg_clear();
+            save = true;
+        }
+    }
+
+    // [END_POSE] Stuetzhand nach dem Einlegen
+    {
+        auto ec = re4vr::wpose::end_cfg(wid);
+        bool ech = false;
+
+        if (ImGui::Checkbox("End-Pose (Stuetzhand nach dem Einlegen)", &ec.on)) {
+            ech = true;
+            save = true;
+        }
+
+        if (ec.on) {
+            ech |= ImGui::DragFloat("End halten s", &ec.hold, 0.005f, 0.0f, 2.0f, "%.3f");
+            save |= ImGui::IsItemDeactivatedAfterEdit();
+            ech |= ImGui::DragFloat("End ausblenden s", &ec.out, 0.005f, 0.0f, 2.0f, "%.3f");
+            save |= ImGui::IsItemDeactivatedAfterEdit();
+        }
+
+        if (ech) {
+            re4vr::wpose::set_end_cfg(wid, ec);
+        }
+    }
+
+    int32_t fw = -1;
+    std::string fn{};
+    re4vr::wpose::force(fw, fn);
+
+    const auto names = re4vr::wpose::seen(wid);
+
+    if (names.empty()) {
+        ImGui::Text("Noch keine Pose benutzt");
+    }
+
+    for (const auto& name : names) {
+        re4vr::wpose::Bones mine{};
+        const bool is_own = re4vr::wpose::own(wid, name, &mine);
+        const std::string label = name + (is_own ? "  (eigen)" : "") + "###wp_" + name;
+
+        if (!ImGui::TreeNode(label.c_str())) {
+            continue;
+        }
+
+        ImGui::PushID(name.c_str());
+
+        bool forced = (fw == wid && fn == name);
+
+        if (ImGui::Checkbox("Erzwingen", &forced)) {
+            re4vr::wpose::set_force(wid, forced ? name : std::string{});
+        }
+
+        if (!is_own) {
+            if (ImGui::Button("Eigene Finger fuer diese Waffe")) {
+                re4vr::wpose::Bones b{};
+
+                if (!re4vr::wpose::base(name, b)) {
+                    if (const auto it = m_poses.find(name); it != m_poses.end()) {
+                        b = it->second.bones;
+                    }
+                }
+
+                if (!b.empty()) {
+                    re4vr::wpose::set_own(wid, name, b);
+                    save = true;
+                }
+            }
+        } else {
+            if (ImGui::Button("Zuruecksetzen")) {
+                re4vr::wpose::drop_own(wid, name);
+                wpose_deg_clear();
+                save = true;
+            }
+
+            // Kopieren von: jede bekannte Pose (Basis-Store + zuletzt gesehene)
+            static std::string copy_src{};
+            if (ImGui::BeginCombo("Kopieren von", copy_src.empty() ? "-" : copy_src.c_str())) {
+                auto all = pose_names();
+
+                for (const auto& n : re4vr::wpose::base_names()) {
+                    if (std::find(all.begin(), all.end(), n) == all.end()) {
+                        all.push_back(n);
+                    }
+                }
+
+                std::sort(all.begin(), all.end());
+
+                for (const auto& n : all) {
+                    if (ImGui::Selectable(n.c_str(), n == copy_src)) {
+                        copy_src = n;
+                    }
+                }
+
+                ImGui::EndCombo();
+            }
+
+            ImGui::SameLine();
+
+            if (ImGui::Button("Kopieren") && !copy_src.empty()) {
+                re4vr::wpose::Bones b{};
+
+                if (!re4vr::wpose::own(wid, copy_src, &b) && !re4vr::wpose::base(copy_src, b)) {
+                    if (const auto it = m_poses.find(copy_src); it != m_poses.end()) {
+                        b = it->second.bones;
+                    }
+                }
+
+                if (!b.empty()) {
+                    re4vr::wpose::set_own(wid, name, b);
+                    re4vr::wpose::own(wid, name, &mine);
+                    wpose_deg_clear();
+                    save = true;
+                }
+            }
+
+            // Finger je Bone in Grad
+            std::vector<std::string> bones{};
+
+            for (const auto& e : mine) {
+                bones.push_back(e.first);
+            }
+
+            std::sort(bones.begin(), bones.end());
+
+            bool changed = false;
+
+            for (const auto& bn : bones) {
+                const auto key = wpose_key(wid, name, bn);
+                auto dit = g_wpose_deg.find(key);
+
+                if (dit == g_wpose_deg.end()) {
+                    dit = g_wpose_deg.emplace(key, glm::degrees(glm::eulerAngles(mine[bn]))).first;
+                }
+
+                float v[3]{dit->second.x, dit->second.y, dit->second.z};
+
+                if (ImGui::DragFloat3(bn.c_str(), v, 0.25f, -180.0f, 180.0f, "%.1f")) {
+                    dit->second = glm::vec3{v[0], v[1], v[2]};
+                    mine[bn] = glm::normalize(glm::quat{glm::radians(dit->second)});
+                    changed = true;
+                }
+
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                    save = true;
+                }
+            }
+
+            if (changed) {
+                re4vr::wpose::set_own(wid, name, mine);
+            }
+        }
+
+        ImGui::PopID();
+        ImGui::TreePop();
+    }
+
+    if (save) {
+        save_cfg();
+    }
+
+    ImGui::TreePop();
+}
+
+// ============================================================================
+// [KFH 2026-09-24] Keyframe-Handposen -- Finger-Teil
+// ============================================================================
+
+// Mag-in-hand-Finger der Waffe (dieselbe Namenswahl wie beim Tragen: Pose
+// pro Waffe, sonst mag_hold_pose), inkl. eigener [WPOSE]-Fassung.
+bool RE4VRReloadMain::kfh_base_bones(int32_t wid, re4vr::wpose::Bones& out) {
+    // [KFH R9] Module mit eigenen Tragen-Posen (Red9Clip/Red9Single) melden sie
+    // an ReloadAdv.
+    if (m_adv != nullptr) {
+        if (const auto* b = m_adv->kfh_base(wid); b != nullptr && !b->empty()) {
+            out = *b;
+            return true;
+        }
+    }
+
+    std::string mp{};
+
+    if (const auto it = m_mag_pose.find(wid); it != m_mag_pose.end()) {
+        mp = it->second;
+    }
+
+    if (mp.empty()) {
+        mp = cfg.mag_hold_pose;
+    }
+
+    if (mp.empty()) {
+        return false;
+    }
+
+    re4vr::wpose::Bones b{};
+
+    if (const auto it = m_poses.find(mp); it != m_poses.end()) {
+        b = it->second.bones;
+    } else if (!re4vr::wpose::base(mp, b)) {
+        return false;
+    }
+
+    out = re4vr::wpose::pick(mp, b);
+
+    return !out.empty();
+}
+
+void RE4VRReloadMain::kfh_finger_ui(int32_t wid, const std::string& name, const char* copy_label,
+                                    bool from_kf1) {
+    ImGui::PushID(name.c_str());
+
+    bool save = false;
+    re4vr::wpose::Bones mine{};
+    const bool is_own = re4vr::wpose::own(wid, name, &mine);
+
+    if (ImGui::Button(copy_label)) {
+        re4vr::wpose::Bones src{};
+        bool ok = false;
+
+        if (from_kf1) {
+            ok = re4vr::wpose::own(wid, "(kf1)", &src);
+        }
+
+        if (!ok) {
+            ok = kfh_base_bones(wid, src);
+        }
+
+        if (ok && !src.empty()) {
+            re4vr::wpose::set_own(wid, name, src);
+            re4vr::wpose::own(wid, name, &mine);
+            wpose_deg_clear();
+            save = true;
+        }
+    }
+
+    // Grob/Fein je Editor: grob = 3 Grad pro Pixel, fein = 0,25 (nicht gespeichert)
+    static std::unordered_map<std::string, bool> s_coarse{};
+    bool& coarse = s_coarse[name];
+
+    if (is_own) {
+        ImGui::SameLine();
+        ImGui::Checkbox("Grob", &coarse);
+    }
+
+    if (!is_own) {
+        ImGui::Text("Finger: noch keine (es gelten die Mag-in-hand-Finger)");
+    } else {
+        ImGui::SameLine();
+
+        if (ImGui::Button("Zuruecksetzen")) {
+            re4vr::wpose::drop_own(wid, name);
+            wpose_deg_clear();
+            save = true;
+        } else {
+            std::vector<std::string> bones{};
+
+            for (const auto& e : mine) {
+                bones.push_back(e.first);
+            }
+
+            std::sort(bones.begin(), bones.end());
+
+            bool changed = false;
+
+            for (const auto& bn : bones) {
+                const auto key = wpose_key(wid, name, bn);
+                auto dit = g_wpose_deg.find(key);
+
+                if (dit == g_wpose_deg.end()) {
+                    dit = g_wpose_deg.emplace(key, glm::degrees(glm::eulerAngles(mine[bn]))).first;
+                }
+
+                float v[3]{dit->second.x, dit->second.y, dit->second.z};
+
+                if (ImGui::DragFloat3(bn.c_str(), v, coarse ? 3.0f : 0.25f, -180.0f, 180.0f, "%.1f")) {
+                    dit->second = glm::vec3{v[0], v[1], v[2]};
+                    mine[bn] = glm::normalize(glm::quat{glm::radians(dit->second)});
+                    changed = true;
+                }
+
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                    save = true;
+                }
+            }
+
+            if (changed) {
+                re4vr::wpose::set_own(wid, name, mine);
+            }
+        }
+    }
+
+    if (save) {
+        save_cfg();
+    }
+
+    ImGui::PopID();
 }
 
 // ============================================================================
@@ -2318,6 +2737,14 @@ bool RE4VRReloadMain::safe_reduce(::REManagedObject* inv, int32_t ammo_id, int32
 // [LADEN + BUCHEN] Stand vorher merken, laden lassen, und wenn die Waffe voller
 // wurde, ohne dass die Reserve gefallen ist, genau diese Menge buchen.
 bool RE4VRReloadMain::load_and_book(::REManagedObject* inv, int32_t et, int32_t n, bool refill) {
+    // [END_POSE 2026-09-24] Jedes Einlegen bucht hier -> Ausloeser fuer die
+    // End-Pose der Stuetzhand (RE4VRMotion::update_support_dock).
+    if (const auto ew = re4vr::fc::equip_wid(); ew.has_value()) {
+        re4vr::lua_set_number("__re4_end_pose_t",
+                              static_cast<double>(std::clock()) / static_cast<double>(CLOCKS_PER_SEC));
+        re4vr::lua_set_number("__re4_end_pose_wid", static_cast<double>(*ew));
+    }
+
     auto* w = (inv != nullptr)
         ? re4vr::call_safe<::REManagedObject*>(inv, "getEquippedWeapon", et) : nullptr;
     const auto aid = (w != nullptr) ? call_enum(w, "get_CurrentAmmo") : std::nullopt;
@@ -2363,6 +2790,22 @@ bool RE4VRReloadMain::safe_inv_reload(::REManagedObject* inv, int32_t et, int32_
 
     if (w == nullptr) {
         return false;
+    }
+
+    // [FREMDWAFFE 2026-09-24 -- Tester-Sonde re4_ammo_tester_sonde.txt]
+    // Das Inventar kann eine ANDERE Waffe als ausgeruestet fuehren als die in
+    // der Hand (gemessen: Kampfmesser 5000 ausgeruestet, SG-09 R 4000 in der
+    // Hand). Dann wuerde die Pistolenreserve ins Messer gebucht (0/24 ->
+    // Messer 61) und die Pistole bekaeme nichts. Nur buchen, wenn beide
+    // Waffen-IDs zur Hand passen.
+    if (const auto hand = get_equip_wid(); hand.has_value()) {
+        const auto ww = call_enum(w, "get_WeaponId");
+        auto* rw = real_wi();
+        const auto rwid = (rw != nullptr) ? call_enum(rw, "get_WeaponId") : std::nullopt;
+
+        if ((ww.has_value() && *ww != *hand) || (rwid.has_value() && *rwid != *hand)) {
+            return false;
+        }
     }
 
     // (2) [AMMO-GUARD] Reserve des zur Waffe passenden Ammo-Items lesen und n
@@ -2687,7 +3130,22 @@ void RE4VRReloadMain::refresh_weapon() {
     const auto wid = get_equip_wid();
 
     if (!wid.has_value() || *wid == 0) {
+        // [REST_LP SAVE-LOAD 22.09.2026] Beim Save-Load gibt es kurz KEINE Waffe
+        // (Sonde: wid=nil). Hier wurde der ganze Zustand samt gemessener Ruhelage
+        // verworfen -- neu gemessen wird sie nur mit steckendem Magazin. Drueckte
+        // der Spieler nach dem Laden B, bevor das geschah, brach jedes Einsetzen
+        // mit "ABBRUCH: keine rest_lp" ab: das Mag sprang in die Waffe und fiel
+        // runter (re4_mag_jetzt_sonde.txt 16:49:47/49). Wie im Re-Resolve unten
+        // (Luas Reset listet rest_lp/rest_lr/chamber_off nie) die Ruhelage behalten.
+        const auto keep_rest_lp = m_wep.rest_lp;
+        const auto keep_rest_lr = m_wep.rest_lr;
+        const auto keep_chamber_off = m_wep.chamber_off;
+
         m_wep = Wep{};
+
+        m_wep.rest_lp = keep_rest_lp;
+        m_wep.rest_lr = keep_rest_lr;
+        m_wep.chamber_off = keep_chamber_off;
 
         return;
     }
@@ -3427,6 +3885,12 @@ bool RE4VRReloadMain::start_mag_insert() {
     m_mag_insert.active = true;
     m_mag_insert.snd_played = false;
 
+    // [KFH 2026-09-24] Keyframe-Handpose: ab Keyframe 1 klemmt die Hand an der
+    // Shell (nur wenn fuer diese Waffe eingeschaltet, sonst wirkungslos).
+    if (m_adv != nullptr && m_mag_insert.keyframe) {
+        m_adv->kfh_begin(kf_wid(wid));
+    }
+
     re4vr::lua_set_string("__re4_mag_insert_why", "GESTARTET");
     re4vr::lua_set_bool("__re4_mag_insert_keyframe", m_mag_insert.keyframe);
 
@@ -3748,11 +4212,20 @@ void RE4VRReloadMain::update_mag_insert() {
         snap = std::clamp(cfg.insert_snap_at, 0.5f, 1.0f);
     }
 
+    // [KFH 2026-09-24] Bahn-Fortschritt fuer die Keyframe-Handpose.
+    if (m_adv != nullptr && m_mag_insert.keyframe) {
+        m_adv->kfh_prog(t);
+    }
+
     if (t < snap) {
         return;
     }
 
     m_mag_insert.active = false;
+
+    if (m_adv != nullptr && m_mag_insert.keyframe) {
+        m_adv->kfh_end();   // [KFH] eingerastet -> End-Pose / Ausblenden
+    }
 
     // [MANUAL_INSERT] Der Einrast-Klack gehoert an DIESEN Moment: hier ist das
     // Magazin tatsaechlich eingerastet.
@@ -5908,6 +6381,14 @@ void RE4VRReloadMain::publish_dock() {
     // [PUSH_DOCK] BEVOR geleert wird: laeuft gerade das Mag-Nachdruecken,
     // gehoert das Dock dem Magazin. Wichtig, weil publish_dock 5x pro Frame
     // laeuft -- ein blindes Leeren raeumte das Push-Dock jedes Mal wieder ab.
+    // [KFH 2026-09-24] Keyframe-Handpose (nur Waffen, fuer die sie eingeschaltet
+    // ist) -- gleiche Exit-Flanke wie das Push-Dock.
+    if (m_adv != nullptr && m_adv->kfh_publish()) {
+        m_rack.pushdock_was_active = true;
+        re4vr::lua_set_nil("__re4_reload_lexit_t");
+        return;
+    }
+
     if (publish_push_dock()) {
         return;
     }
@@ -7125,9 +7606,12 @@ void RE4VRReloadMain::apply_slide_pass() {
         // [SS-HANDOVER] Skull Shaker: beim TRAGEN ist die Shell der Hand-Clone
         // und _04 bleibt versteckt. Ab dem INSERT ist es umgekehrt.
         const bool ss_insert = (wid == 6001) && m_mag_insert.active;
+        // [KFH 2026-09-24] "Force Keyframe 1 / End" parkt die Shell auf der Bahn
+        // -> dort auch sichtbar schalten (gemessen: Scale 1, aber Mesh-Part aus).
+        const bool kfh_force = (m_adv != nullptr) && m_adv->kfh_force_on();
 
         if (m_wep.mag_joint != nullptr
-            && (ss_insert
+            && (ss_insert || (kfh_force && is_shotgun(wid))
                 || (is_shotgun(wid) && wid != 6001
                     && (m_mag_hand.active || m_mag_tune.active || m_mag_insert.active)))) {
             set_vec3(m_wep.mag_joint, "set_LocalScale", glm::vec3{1.0f, 1.0f, 1.0f});
@@ -7320,6 +7804,14 @@ void RE4VRReloadMain::tick_saveload_guard() {
     // Regale leeren wir hier selbst, damit das auch bei anderer Waffe greift.
     m_pe_cache = nullptr;
     m_wep.tf = nullptr;
+    // [LHAND SAVE-LOAD 22.09.2026] Die gemerkte linke Hand gehoert zum ALTEN Body
+    // und bleibt nach dem Laden ansprechbar (obj_ok) -> get_left_hand holte sie
+    // nie neu. Folge (re4_mag_jetzt_sonde.txt 16:49:59-16:50:00): beim Holster-
+    // Grab folgte das Magazin nicht der Hand, blieb in der Waffe und fiel beim
+    // Loslassen raus. Reset Scripts leerte sie (on_lua_state_destroyed) -- darum
+    // "verschob" ein Reset den Fehler nur. Hier dasselbe fuer den Body-Wechsel.
+    m_lhand_joint = nullptr;
+    m_thumb_joint = nullptr;
     m_mag_out_store.clear();
     m_rack._needs_store.clear();
     m_rack._gone_wid.reset();

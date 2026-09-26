@@ -186,6 +186,11 @@ private:
     std::optional<double> flat_yaw_of(const glm::quat& rot) const;
     std::optional<glm::quat> yaw_quat_of(const glm::quat& rot) const;
 
+    // ---- [BODY-EPOCH 2026-09-22] -------------------------------------------
+    // Spieler-Body gewechselt (Save-Load/Tod) -> gemerkte Body-Zeiger weg.
+    void check_body_epoch();
+    void drop_body_caches();
+
     // ---- Hip-Follow -------------------------------------------------------
     ::REManagedObject* get_hip_joint(::REManagedObject* tf);
     bool is_user_turning();
@@ -342,6 +347,8 @@ private:
     double m_zone_win{0.5};
 
     RefHandle m_bw_motion{};
+
+    uint64_t m_body_epoch{0};   // [BODY-EPOCH] s. re4vr::body_epoch()
 
     // Roomscale
     std::optional<double> m_hmd_follow_last_t{};

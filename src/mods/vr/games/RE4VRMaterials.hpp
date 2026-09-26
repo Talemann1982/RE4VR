@@ -168,6 +168,11 @@ private:
     void store_lamp_go(::REManagedObject* go);
     void store_fl_go(::REManagedObject* go);
 
+    // [BODY-EPOCH 2026-09-22] Spieler-Body gewechselt (Save-Load/Tod) ->
+    // gemerkte Body-Zeiger weg, s. re4vr::body_epoch().
+    void drop_body_caches();
+    uint64_t m_body_epoch{0};
+
     // ---------------------------------------------------------- Typen (TDB)
     sdk::RETypeDefinition* m_scene_td{nullptr};
     ::REManagedObject* m_t_mesh{nullptr};

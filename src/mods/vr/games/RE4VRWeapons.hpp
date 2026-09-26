@@ -602,6 +602,11 @@ private:
     std::optional<uintptr_t> m_ts_body_addr{};
     void ts_saveload_tick();
 
+    // [BODY-EPOCH 2026-09-22] Zuletzt gesehener re4vr::body_epoch() und das
+    // Verwerfen der gemerkten Body-Zeiger (s. RE4VR.hpp).
+    uint64_t m_body_epoch{0};
+    void drop_body_caches();
+
 public:
     // [GRANATENFLUG] Von den GrenadeShell-Hooks gerufen (freie Lambdas kommen
     // an private Member nicht heran).

@@ -14,6 +14,8 @@
 #include <algorithm>
 #include <cmath>   // [TAUNT-WAV] std::pow/std::abs fuer die dB-Umrechnung
 #include <mutex>
+#include <atomic>  // [BODY-EPOCH]
+#include <climits> // [BODY-EPOCH] INT32_MIN
 #include <chrono>
 
 #include <sdk/RETypeDB.hpp>
@@ -1254,6 +1256,355 @@ std::optional<int32_t> equip_wid() {
     return g_s.wid;
 }
 } // namespace fc
+
+// ===========================================================================
+// [WPOSE 2026-09-24] Handposen pro Waffe -- s. RE4VR.hpp
+// ===========================================================================
+namespace wpose {
+namespace {
+std::mutex g_mx{};
+std::unordered_map<int32_t, std::unordered_map<std::string, Bones>> g_own{};
+std::unordered_map<int32_t, std::set<std::string>> g_seen{};
+std::unordered_map<std::string, Bones> g_base{};
+std::unordered_map<int32_t, EndCfg> g_end{};
+int32_t g_force_wid{-1};
+std::string g_force_name{};
+} // namespace
+
+Bones pick(const std::string& name, const Bones& b) {
+    const auto wid = fc::equip_wid();
+    std::scoped_lock _{g_mx};
+
+    if (!g_base.contains(name)) {
+        g_base[name] = b;
+    }
+
+    if (!wid.has_value()) {
+        return b;
+    }
+
+    g_seen[*wid].insert(name);
+
+    if (const auto w = g_own.find(*wid); w != g_own.end()) {
+        if (const auto p = w->second.find(name); p != w->second.end() && !p->second.empty()) {
+            return p->second;
+        }
+    }
+
+    return b;
+}
+
+std::vector<std::string> seen(int32_t wid) {
+    std::scoped_lock _{g_mx};
+    std::set<std::string> s{};
+
+    if (const auto it = g_seen.find(wid); it != g_seen.end()) {
+        s = it->second;
+    }
+
+    if (const auto it = g_own.find(wid); it != g_own.end()) {
+        for (const auto& e : it->second) {
+            s.insert(e.first);
+        }
+    }
+
+    return {s.begin(), s.end()};
+}
+
+std::vector<int32_t> wids_with_own() {
+    std::scoped_lock _{g_mx};
+    std::vector<int32_t> v{};
+
+    for (const auto& e : g_own) {
+        if (!e.second.empty()) {
+            v.push_back(e.first);
+        }
+    }
+
+    std::sort(v.begin(), v.end());
+
+    return v;
+}
+
+bool own(int32_t wid, const std::string& name, Bones* out) {
+    std::scoped_lock _{g_mx};
+    const auto w = g_own.find(wid);
+
+    if (w == g_own.end()) {
+        return false;
+    }
+
+    const auto p = w->second.find(name);
+
+    if (p == w->second.end()) {
+        return false;
+    }
+
+    if (out != nullptr) {
+        *out = p->second;
+    }
+
+    return true;
+}
+
+void set_own(int32_t wid, const std::string& name, const Bones& b) {
+    std::scoped_lock _{g_mx};
+    g_own[wid][name] = b;
+}
+
+void drop_own(int32_t wid, const std::string& name) {
+    std::scoped_lock _{g_mx};
+
+    if (const auto w = g_own.find(wid); w != g_own.end()) {
+        w->second.erase(name);
+
+        if (w->second.empty()) {
+            g_own.erase(w);
+        }
+    }
+}
+
+bool base(const std::string& name, Bones& out) {
+    std::scoped_lock _{g_mx};
+    const auto it = g_base.find(name);
+
+    if (it == g_base.end()) {
+        return false;
+    }
+
+    out = it->second;
+
+    return true;
+}
+
+std::vector<std::string> base_names() {
+    std::scoped_lock _{g_mx};
+    std::vector<std::string> v{};
+
+    for (const auto& e : g_base) {
+        v.push_back(e.first);
+    }
+
+    std::sort(v.begin(), v.end());
+
+    return v;
+}
+
+void copy_all(int32_t from, int32_t to) {
+    std::scoped_lock _{g_mx};
+    const auto src = g_own.find(from);
+
+    if (src == g_own.end() || from == to) {
+        return;
+    }
+
+    const auto copy = src->second;   // eigene Kopie: g_own[to] kann rehashen
+
+    for (const auto& e : copy) {
+        g_own[to][e.first] = e.second;
+    }
+
+    if (const auto e = g_end.find(from); e != g_end.end()) {
+        const EndCfg c = e->second;
+        g_end[to] = c;
+    }
+}
+
+EndCfg end_cfg(int32_t wid) {
+    std::scoped_lock _{g_mx};
+    const auto it = g_end.find(wid);
+
+    return (it != g_end.end()) ? it->second : EndCfg{};
+}
+
+void set_end_cfg(int32_t wid, const EndCfg& c) {
+    std::scoped_lock _{g_mx};
+    g_end[wid] = c;
+}
+
+nlohmann::json end_to_json() {
+    std::scoped_lock _{g_mx};
+    nlohmann::json j = nlohmann::json::object();
+
+    for (const auto& e : g_end) {
+        j[std::to_string(e.first)] = {{"on", e.second.on}, {"hold", e.second.hold},
+                                      {"out", e.second.out}};
+    }
+
+    return j;
+}
+
+void end_from_json(const nlohmann::json& j) {
+    std::scoped_lock _{g_mx};
+    g_end.clear();
+
+    if (!j.is_object()) {
+        return;
+    }
+
+    for (const auto& w : j.items()) {
+        int32_t wid = 0;
+
+        try {
+            wid = std::stoi(w.key());
+        } catch (...) {
+            continue;
+        }
+
+        const auto& v = w.value();
+
+        if (!v.is_object()) {
+            continue;
+        }
+
+        EndCfg c{};
+
+        if (const auto it = v.find("on"); it != v.end() && it->is_boolean()) {
+            c.on = it->get<bool>();
+        }
+
+        if (const auto it = v.find("hold"); it != v.end() && it->is_number()) {
+            c.hold = it->get<float>();
+        }
+
+        if (const auto it = v.find("out"); it != v.end() && it->is_number()) {
+            c.out = it->get<float>();
+        }
+
+        g_end[wid] = c;
+    }
+}
+
+void set_force(int32_t wid, const std::string& name) {
+    std::scoped_lock _{g_mx};
+    g_force_wid = name.empty() ? -1 : wid;
+    g_force_name = name;
+}
+
+bool force(int32_t& wid, std::string& name) {
+    std::scoped_lock _{g_mx};
+
+    if (g_force_name.empty()) {
+        return false;
+    }
+
+    wid = g_force_wid;
+    name = g_force_name;
+
+    return true;
+}
+
+// { "<wid>": { "<pose>": { "<bone>": [w,x,y,z] } } } -- Format wie "poses".
+nlohmann::json to_json() {
+    std::scoped_lock _{g_mx};
+    nlohmann::json j = nlohmann::json::object();
+
+    for (const auto& w : g_own) {
+        nlohmann::json jw = nlohmann::json::object();
+
+        for (const auto& p : w.second) {
+            nlohmann::json jb = nlohmann::json::object();
+
+            for (const auto& b : p.second) {
+                jb[b.first] = nlohmann::json::array({b.second.w, b.second.x, b.second.y, b.second.z});
+            }
+
+            jw[p.first] = jb;
+        }
+
+        if (!jw.empty()) {
+            j[std::to_string(w.first)] = jw;
+        }
+    }
+
+    return j;
+}
+
+void from_json(const nlohmann::json& j) {
+    std::scoped_lock _{g_mx};
+    g_own.clear();
+
+    if (!j.is_object()) {
+        return;
+    }
+
+    for (const auto& w : j.items()) {
+        int32_t wid = 0;
+
+        try {
+            wid = std::stoi(w.key());
+        } catch (...) {
+            continue;
+        }
+
+        if (!w.value().is_object()) {
+            continue;
+        }
+
+        for (const auto& p : w.value().items()) {
+            if (!p.value().is_object()) {
+                continue;
+            }
+
+            Bones b{};
+
+            for (const auto& e : p.value().items()) {
+                const auto& q = e.value();
+
+                if (q.is_array() && q.size() >= 4) {
+                    b[e.key()] = glm::quat{q[0].get<float>(), q[1].get<float>(),
+                                           q[2].get<float>(), q[3].get<float>()};
+                }
+            }
+
+            if (!b.empty()) {
+                g_own[wid][p.key()] = b;
+            }
+        }
+    }
+}
+} // namespace wpose
+
+// ===========================================================================
+// [BODY-EPOCH 2026-09-22] s. RE4VR.hpp
+// ===========================================================================
+namespace {
+std::atomic<uint64_t> g_body_epoch{0};
+std::atomic<int32_t> g_body_epoch_frame{INT32_MIN};
+std::atomic<uintptr_t> g_body_epoch_addr{0}; // letzte bekannte Body-Adresse
+std::atomic<bool> g_body_epoch_seen{false};   // schon einmal einen Body gesehen
+std::atomic<bool> g_body_epoch_gone{false};   // Body war seitdem weg
+} // namespace
+
+uint64_t body_epoch() {
+    const auto* vr = VR::get().get();
+    const int32_t f = vr != nullptr ? vr->get_frame_count() : -1;
+    int32_t last = g_body_epoch_frame.load(std::memory_order_acquire);
+
+    // Nur der erste Aufrufer eines Frames prueft; alle anderen lesen nur.
+    if (f != last &&
+        g_body_epoch_frame.compare_exchange_strong(last, f, std::memory_order_acq_rel)) {
+        auto* go = fc::body_go();
+        const auto addr = reinterpret_cast<uintptr_t>(go);
+
+        if (addr == 0) {
+            if (g_body_epoch_seen.load(std::memory_order_relaxed)) {
+                g_body_epoch_gone.store(true, std::memory_order_relaxed);
+            }
+        } else if (!g_body_epoch_seen.load(std::memory_order_relaxed)) {
+            // Allererster Body: kein Wechsel.
+            g_body_epoch_seen.store(true, std::memory_order_relaxed);
+            g_body_epoch_addr.store(addr, std::memory_order_relaxed);
+        } else if (addr != g_body_epoch_addr.load(std::memory_order_relaxed) ||
+                   g_body_epoch_gone.load(std::memory_order_relaxed)) {
+            g_body_epoch_addr.store(addr, std::memory_order_relaxed);
+            g_body_epoch_gone.store(false, std::memory_order_relaxed);
+            g_body_epoch.fetch_add(1, std::memory_order_acq_rel);
+        }
+    }
+
+    return g_body_epoch.load(std::memory_order_acquire);
+}
 
 bool lua_is_executing() {
     auto lua = lua_state();

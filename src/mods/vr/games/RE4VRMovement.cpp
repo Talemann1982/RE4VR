@@ -368,6 +368,33 @@ void RE4VRMovement::drop(RefHandle& h) {
     h.reffed = false;
 }
 
+// ============================================================================
+// [BODY-EPOCH 2026-09-22] Spieler-Body gewechselt (Save-Load/Tod)
+// ============================================================================
+// Die alten Joints/Motion bleiben ansprechbar -- die Proben in get_hip_joint/
+// get_spine_joint (get_Position) und update_anim_export (obj_ok) fallen dann
+// NICHT durch. Hier nur die gemerkten Zeiger weg (drop = release wie in
+// reset_state), damit der vorhandene Neu-Hol-Zweig greift.
+void RE4VRMovement::check_body_epoch() {
+    const auto e = re4vr::body_epoch();
+
+    if (e != m_body_epoch) {
+        m_body_epoch = e;
+        drop_body_caches();
+    }
+}
+
+void RE4VRMovement::drop_body_caches() {
+    drop(m_hip_joint);
+
+    for (auto& [k, h] : m_spine_joint_cache) {
+        drop(h);
+    }
+
+    m_spine_joint_cache.clear();
+    drop(m_bw_motion);
+}
+
 
 // ============================================================================
 // Konfiguration (Lua Z.41-259)
@@ -4172,6 +4199,8 @@ void RE4VRMovement::on_pre_application_entry(void* entry, const char* name, size
         return;
     }
 
+    check_body_epoch();   // [BODY-EPOCH] verwirft nur beim Wechsel
+
     if (!m_types_resolved) {
         m_types_resolved = true;
         m_player_cam_td = sdk::find_type_definition(game_namespace("PlayerCameraController"));
@@ -4217,6 +4246,8 @@ void RE4VRMovement::on_application_entry(void* entry, const char* name, size_t h
     if (re4vr::mods_gated()) {
         return;
     }
+
+    check_body_epoch();   // [BODY-EPOCH] verwirft nur beim Wechsel
 
     if (hash == "LateUpdateBehavior"_fnv) {
         roomscale_flush_body();

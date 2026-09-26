@@ -214,6 +214,11 @@ private:
     // ------------------------------------------------------------------
     void update_bulletrush();
 
+    // [BODY-EPOCH 2026-09-22] Spieler-Body gewechselt (Save-Load/Tod) ->
+    // gemerkte Body-Zeiger weg, s. re4vr::body_epoch().
+    void drop_body_caches();
+    uint64_t m_body_epoch{0};
+
     // ------------------------------------------------------------------
     // (9) Laser-Dot
     // ------------------------------------------------------------------

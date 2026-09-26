@@ -2262,6 +2262,14 @@ bool RE4VRReload4::safe_reduce(::REManagedObject* inv, int32_t ammo_id, int32_t 
 // [LADEN + BUCHEN] Stand vorher merken, laden lassen, und wenn die Waffe voller
 // wurde, ohne dass die Reserve gefallen ist, genau diese Menge buchen.
 bool RE4VRReload4::load_and_book(::REManagedObject* inv, int32_t et, int32_t n, bool refill) {
+    // [END_POSE 2026-09-24] Jedes Einlegen bucht hier -> Ausloeser fuer die
+    // End-Pose der Stuetzhand (RE4VRMotion::update_support_dock).
+    if (const auto ew = re4vr::fc::equip_wid(); ew.has_value()) {
+        re4vr::lua_set_number("__re4_end_pose_t",
+                              static_cast<double>(std::clock()) / static_cast<double>(CLOCKS_PER_SEC));
+        re4vr::lua_set_number("__re4_end_pose_wid", static_cast<double>(*ew));
+    }
+
     auto* w = (inv != nullptr)
         ? re4vr::call_safe<::REManagedObject*>(inv, "getEquippedWeapon", et) : nullptr;
     const auto aid = (w != nullptr) ? call_enum(w, "get_CurrentAmmo") : std::nullopt;
@@ -2307,6 +2315,22 @@ bool RE4VRReload4::safe_inv_reload(::REManagedObject* inv, int32_t et, int32_t n
 
     if (w == nullptr) {
         return false;
+    }
+
+    // [FREMDWAFFE 2026-09-24 -- Tester-Sonde re4_ammo_tester_sonde.txt]
+    // Das Inventar kann eine ANDERE Waffe als ausgeruestet fuehren als die in
+    // der Hand (gemessen: Kampfmesser 5000 ausgeruestet, SG-09 R 4000 in der
+    // Hand). Dann wuerde die Pistolenreserve ins Messer gebucht (0/24 ->
+    // Messer 61) und die Pistole bekaeme nichts. Nur buchen, wenn beide
+    // Waffen-IDs zur Hand passen.
+    if (const auto hand = get_equip_wid(); hand.has_value()) {
+        const auto ww = call_enum(w, "get_WeaponId");
+        auto* rw = real_wi();
+        const auto rwid = (rw != nullptr) ? call_enum(rw, "get_WeaponId") : std::nullopt;
+
+        if ((ww.has_value() && *ww != *hand) || (rwid.has_value() && *rwid != *hand)) {
+            return false;
+        }
     }
 
     // (2) [AMMO-GUARD] Reserve des zur Waffe passenden Ammo-Items lesen und n
@@ -3292,6 +3316,12 @@ bool RE4VRReload4::start_mag_insert() {
     m_mag_insert.active = true;
     m_mag_insert.snd_played = false;
 
+    // [KFH 2026-09-25] Keyframe-Handpose (wie ReloadMain): ab Keyframe 1 klemmt die
+    // Hand an der Shell (nur wenn fuer diese Waffe eingeschaltet).
+    if (m_adv != nullptr && m_mag_insert.keyframe) {
+        m_adv->kfh_begin(wid);
+    }
+
     // [MANUAL_INSERT] Handschub scharf machen: Nullpunkt ist der Messwert GENAU
     // JETZT, also im Moment des Andockens.
     m_mag_insert.manual = false;
@@ -3599,11 +3629,20 @@ void RE4VRReload4::update_mag_insert() {
         snap = std::clamp(cfg.insert_snap_at, 0.5f, 1.0f);
     }
 
+    // [KFH 2026-09-25] Bahn-Fortschritt fuer die Keyframe-Handpose.
+    if (m_adv != nullptr && m_mag_insert.keyframe) {
+        m_adv->kfh_prog(t);
+    }
+
     if (t < snap) {
         return;
     }
 
     m_mag_insert.active = false;
+
+    if (m_adv != nullptr && m_mag_insert.keyframe) {
+        m_adv->kfh_end();   // [KFH] eingerastet -> End-Pose / Ausblenden
+    }
 
     // [MANUAL_INSERT] Der Einrast-Klack gehoert an DIESEN Moment: hier ist das
     // Magazin tatsaechlich eingerastet.
@@ -5728,6 +5767,14 @@ void RE4VRReload4::publish_dock() {
     // [PUSH_DOCK] BEVOR geleert wird: laeuft gerade das Mag-Nachdruecken,
     // gehoert das Dock dem Magazin. Wichtig, weil publish_dock 5x pro Frame
     // laeuft -- ein blindes Leeren raeumte das Push-Dock jedes Mal wieder ab.
+    // [KFH 2026-09-25] Keyframe-Handpose (wie ReloadMain) -- gleiche Exit-Flanke
+    // wie das Push-Dock.
+    if (m_adv != nullptr && m_adv->kfh_publish()) {
+        m_rack.pushdock_was_active = true;
+        re4vr::lua_set_nil("__re4_reload_lexit_t");
+        return;
+    }
+
     if (publish_push_dock()) {
         return;
     }
@@ -6776,6 +6823,27 @@ void RE4VRReload4::ss_apply() {
         return;
     }
 
+    // [KFH 2026-09-25] Keyframe-Handposen: Waffe + Mag-in-hand-Finger melden.
+    m_adv->kfh_set_weapon(m_wep.tf);
+
+    {
+        std::string mp{};
+
+        if (const auto it = m_mag_pose.find(6100); it != m_mag_pose.end()) {
+            mp = it->second;
+        }
+
+        if (mp.empty()) {
+            mp = cfg.mag_hold_pose;
+        }
+
+        re4vr::wpose::Bones kb{};
+
+        if (m_main != nullptr && !mp.empty() && m_main->pose_bones(mp, kb)) {
+            m_adv->kfh_set_base(6100, kb);
+        }
+    }
+
     const bool preview =
         static_cast<int32_t>(re4vr::lua_get_number("__re4_shell_kf_preview", 0.0)) == 6100;
     const bool inserting = m_mag_insert.active && m_mag_insert.keyframe;
@@ -6943,9 +7011,14 @@ void RE4VRReload4::apply_slide_pass() {
         // [SS-HANDOVER] Skull Shaker: beim TRAGEN ist die Shell der Hand-Clone
         // und _04 bleibt versteckt. Ab dem INSERT ist es umgekehrt.
         const bool ss_insert = (wid == 6001) && m_mag_insert.active;
+        // [KFH 2026-09-25] "Force Keyframe 1 / End" parkt die Shell auf der Bahn
+        // (ReloadAdv::kfh_force_park) -> dort auch sichtbar schalten, wie in
+        // ReloadMain. Der Klon (ss_apply) wird dabei NICHT gezeichnet (gemeldet).
+        RE4VRReloadAdv::Key kfk{};
+        const bool kfh_force = (m_adv != nullptr) && m_adv->kfh_force_key(wid, kfk);
 
         if (m_wep.mag_joint != nullptr
-            && (ss_insert
+            && (ss_insert || (kfh_force && is_shotgun(wid))
                 || (is_shotgun(wid) && wid != 6001
                     && (m_mag_hand.active || m_mag_tune.active || m_mag_insert.active)))) {
             set_vec3(m_wep.mag_joint, "set_LocalScale", glm::vec3{1.0f, 1.0f, 1.0f});
@@ -7145,6 +7218,11 @@ void RE4VRReload4::tick_saveload_guard() {
     // Regale leeren wir hier selbst, damit das auch bei anderer Waffe greift.
     m_pe_cache = nullptr;
     m_wep.tf = nullptr;
+    // [LHAND SAVE-LOAD 22.09.2026] Wie in RE4VRReloadMain belegt: die gemerkte
+    // linke Hand gehoert zum alten Body und bleibt ansprechbar -> nie neu geholt,
+    // das Magazin folgte der Hand nicht. Beim Body-Wechsel verwerfen.
+    m_lhand_joint = nullptr;
+    m_thumb_joint = nullptr;
     m_mag_out_store.clear();
     m_rack._needs_store.clear();
     m_rack._gone_wid.reset();

@@ -1225,6 +1225,13 @@ float RE4VRFirstPerson::apply_crouch_cam_lerp(float y, bool frame_tick) {
 // Kern -- Lua Z.819-1116
 // =====================================================================
 void RE4VRFirstPerson::compute_and_set(bool frame_tick) {
+    // [BODY-EPOCH 2026-09-22] Body gewechselt -> Head-Joint verwerfen. Alle
+    // Phasen laufen hier durch; greift nur einmal je Wechsel.
+    if (const auto ep = re4vr::body_epoch(); ep != m_body_epoch) {
+        m_body_epoch = ep;
+        drop_body_caches();
+    }
+
     const auto set_fix_inactive = []() {
         re4vr::lua_ensure_table("vr_camera_fix");
         re4vr::lua_set_table_bool("vr_camera_fix", "active", false);

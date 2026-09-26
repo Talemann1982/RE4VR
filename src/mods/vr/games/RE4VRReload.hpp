@@ -61,6 +61,7 @@ public:
     void draw_dev_r4()   { m_r4.draw_dev_ui(); }
     void draw_dev_r5()   { m_r5.draw_dev_ui(); }
     void draw_dev_adv()  { m_adv.draw_dev_ui(); }
+    void draw_dev_kf()   { m_adv.draw_kf_ui(); }   // [KFH] "RE4VR - Keyframes"
 
     // Public-Block (Red9 Shell Ratio, order 61) -- liegt in RE4VRReload2.
     void draw_public_red9_ratio() { m_r2.draw_public_red9_ratio(); }

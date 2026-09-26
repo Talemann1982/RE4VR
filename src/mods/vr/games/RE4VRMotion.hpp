@@ -102,6 +102,11 @@ private:
     void store(Handle& h, ::REManagedObject* o);
     void drop(Handle& h);
 
+    // [BODY-EPOCH 2026-09-22] Body gewechselt (Save-Load/Tod): ueber Frames
+    // gemerkte Zeiger verwerfen, der vorhandene Neu-Hol-Zweig holt sie neu.
+    uint64_t m_body_epoch{0};
+    void drop_body_caches();
+
     // ======================================================================
     // Offset-Tabellen. Key = Waffen-ID als STRING, "none" = keine Waffe.
     // get_* liefert nullptr, wenn nicht angelegt; ensure_* legt an und seedet
@@ -309,6 +314,7 @@ private:
         bool  enabled{true};
         bool  force_dock{false};
         bool  docked{false};
+        bool  end_active{false};   // [END_POSE] Stuetzhand nach dem Einlegen laeuft
         // [GRIP_LATCH_REACH] ANTEIL der echten Armreichweite
         // (__vr_arm_chain_L_maxreach), bewusst kein Meterwert: Ada und Leon
         // haben unterschiedlich lange Arme.

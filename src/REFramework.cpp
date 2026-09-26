@@ -2777,70 +2777,92 @@ void REFramework::draw_menu_nav() {
         // zum oberen Rand der Spalte.
         ImGui::Dummy(ImVec2{0.0f, row_height * 0.5f});
 
-        const float w_re = ImGui::CalcTextSize("RE").x;
-        const float w_4 = ImGui::CalcTextSize("4").x;
-        const float w_vr = ImGui::CalcTextSize("VR").x;
-        const float total = w_re + w_4 + w_vr;
+        // [LOGO RESIDENT EVIL 4 25.09.2026 -- Ansage des Users] Statt "RE4VR":
+        // oben "RESIDENT EVIL 4" kleiner (passt in die Spalte), darunter "VR"
+        // mittig in voller Groesse. Rote "4" mit Leuchten und Schatten wie vorher.
+        auto* const draw_list = ImGui::GetWindowDrawList();
+        auto* const font = ImGui::GetFont();
+        const float font_px = ImGui::GetFontSize();
         const float avail = ImGui::GetContentRegionAvail().x;
 
-        if (avail > total) {
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - total) * 0.5f);
+        // Zeile 1: Faktor aus dem Menu Editor (Default 0.72) auf die Kategorie-
+        // Schrift -- reicht die Spalte nicht, weiter verkleinert, bis es passt.
+        const char* const LOGO_TOP = "RESIDENT EVIL 4";
+        const float top_w_full = font->CalcTextSizeA(font_px, FLT_MAX, 0.0f, LOGO_TOP).x;
+        float top_px = font_px * m_vr_menu_logo_top_scale;
+
+        if (top_w_full > 0.0f && top_w_full * (top_px / font_px) > avail) {
+            top_px = font_px * (avail / top_w_full);
         }
 
-        // [LOGO-SCHATTEN 16.09.2026 -- Ansage des Users] Dunkler Schatten unter dem
-        // ganzen "RE4VR", nach rechts unten versetzt -- vor dem Text gezeichnet,
-        // liegt also dahinter. Versatz an der Schriftgroesse, skaliert mit.
-        {
-            const float font_px = ImGui::GetFontSize();
-            const ImVec2 pos = ImGui::GetCursorScreenPos();
-            const float off = font_px * 0.06f;
+        const ImVec2 top_size = font->CalcTextSizeA(top_px, FLT_MAX, 0.0f, LOGO_TOP);
 
-            ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(), font_px,
-                                                ImVec2{pos.x + off, pos.y + off},
-                                                IM_COL32(0, 0, 0, 200), "RE4VR");
+        if (avail > top_size.x) {
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - top_size.x) * 0.5f);
         }
 
-        ImGui::TextUnformatted("RE");
-        ImGui::SameLine(0.0f, 0.0f);
+        const ImVec2 top_pos = ImGui::GetCursorScreenPos();
 
-        // [LOGO-LEUCHTEN 16.09.2026 -- Ansage des Users] Weicher roter Schein um
-        // die "4": dieselbe Ziffer vorher mehrfach im Kreis versetzt und fast
-        // durchsichtig darunter gezeichnet. Drei Ringe, je 12 Richtungen; der
-        // Radius haengt an der Schriftgroesse, skaliert also mit dem Regler mit.
+        // [LOGO-SCHATTEN 16.09.2026 -- Ansage des Users] Dunkler Schatten, nach
+        // rechts unten versetzt -- vor dem Text gezeichnet, liegt also dahinter.
+        // Versatz an der Schriftgroesse, skaliert mit.
+        const auto shadow = [&](const ImVec2& pos, float px, const char* text) {
+            const float off = px * 0.06f;
+            draw_list->AddText(font, px, ImVec2{pos.x + off, pos.y + off}, IM_COL32(0, 0, 0, 200), text);
+        };
+
+        shadow(top_pos, top_px, LOGO_TOP);
+
+        // [LOGO-FARBEN 25.09.2026 -- Ansage des Users] "R" von RESIDENT und "E"
+        // von EVIL rot, die "4" weiss.
         {
-            auto* const draw_list = ImGui::GetWindowDrawList();
-            auto* const font = ImGui::GetFont();
-            const float font_px = ImGui::GetFontSize();
-            const ImVec2 pos = ImGui::GetCursorScreenPos();
-            const float max_r = font_px * 0.10f;
+            const ImU32 white = ImGui::GetColorU32(ImGuiCol_Text);
+            const ImU32 red = IM_COL32(255, 0, 0, 255);
+            const std::pair<const char*, ImU32> parts[] = {
+                {"R", red}, {"ESIDENT ", white}, {"E", red}, {"VIL ", white}, {"4", white},
+            };
+            float x = top_pos.x;
 
-            // [LOGO-ATMEN 16.09.2026 -- Ansage des Users] Der Schein wandert ganz
-            // langsam von 0 auf 100 % und zurueck, so dass es kaum auffaellt: ein
-            // voller Zyklus dauert 10 s (Cosinus, weich an beiden Enden).
-            const double LOGO_GLOW_PERIOD = 10.0;
-            const float glow = 0.5f - 0.5f * static_cast<float>(
-                std::cos(ImGui::GetTime() * (2.0 * 3.14159265358979 / LOGO_GLOW_PERIOD)));
-
-            for (int ring = 1; ring <= 3; ++ring) {
-                const float r = max_r * static_cast<float>(ring) / 3.0f;
-                const ImU32 col = IM_COL32(255, 0, 0, static_cast<int>((40 - ring * 8) * glow));
-
-                for (int k = 0; k < 12; ++k) {
-                    const float ang = static_cast<float>(k) * (2.0f * 3.14159265f / 12.0f);
-                    draw_list->AddText(font, font_px,
-                                       ImVec2{pos.x + std::cos(ang) * r, pos.y + std::sin(ang) * r},
-                                       col, "4");
-                }
+            for (const auto& [text, col] : parts) {
+                draw_list->AddText(font, top_px, ImVec2{x, top_pos.y}, col, text);
+                x += font->CalcTextSizeA(top_px, FLT_MAX, 0.0f, text).x;
             }
         }
 
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{1.0f, 0.0f, 0.0f, 1.0f});
-        ImGui::TextUnformatted("4");
-        ImGui::PopStyleColor();
-        ImGui::SameLine(0.0f, 0.0f);
-        ImGui::TextUnformatted("VR");
+        ImGui::Dummy(top_size);
 
-        ImGui::Dummy(ImVec2{0.0f, row_height});
+        // [LOGO-ABSTAND 26.09.2026 -- Ansage des Users] "VR" direkt unter die erste Zeile: die
+        // Titelschrift hat viel Luft unter den Buchstaben -> Faktor auf deren Zeilenhoehe.
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + m_vr_menu_logo_vr_gap * top_size.y);
+
+        // Zeile 2: "VR" mittig und rot, Faktor aus dem Menu Editor (Default 1.0);
+        // auch hier hoechstens so breit wie die Spalte.
+        const float vr_w_full = font->CalcTextSizeA(font_px, FLT_MAX, 0.0f, "VR").x;
+        float vr_px = font_px * m_vr_menu_logo_vr_scale;
+
+        if (vr_w_full > 0.0f && vr_w_full * (vr_px / font_px) > avail) {
+            vr_px = font_px * (avail / vr_w_full);
+        }
+
+        const ImVec2 vr_size = font->CalcTextSizeA(vr_px, FLT_MAX, 0.0f, "VR");
+
+        if (avail > vr_size.x) {
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - vr_size.x) * 0.5f);
+        }
+
+        const ImVec2 vr_pos = ImGui::GetCursorScreenPos();
+        shadow(vr_pos, vr_px, "VR");
+        draw_list->AddText(font, vr_px, vr_pos, IM_COL32(255, 0, 0, 255), "VR");
+        ImGui::Dummy(vr_size);
+
+        // [LOGO-ABSTAND 26.09.2026] Leerraum bis MOD OPTIONS (frueher fest eine Zeile).
+        const float nav_gap = m_vr_menu_logo_nav_gap * row_height;
+
+        if (nav_gap > 0.0f) {
+            ImGui::Dummy(ImVec2{0.0f, nav_gap});
+        } else {
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + nav_gap);
+        }
     }
 
     item("MOD OPTIONS", MenuCategory::ModOptions, false);

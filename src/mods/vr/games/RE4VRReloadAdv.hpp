@@ -130,6 +130,42 @@ public:
     float push_y_extra(std::optional<int32_t> wid);
     float time_mult();
 
+    // -- [KFH 2026-09-24] Keyframe-Handposen (Nachbau RE9 Push/End pose) --
+    // Pro Waffe, Default AUS: ohne "on" laeuft alles exakt wie vorher.
+    // Keyframe 1: ab dem Andocken klemmt die linke Hand an der Shell/Patrone
+    // (Versatz relativ zum Objekt auf der Bahn), Finger "(kf1)".
+    // End: Hand am letzten Keyframe (Versatz relativ zur WAFFE), Finger
+    // "(kfend)", Ueberblenden im Bahn-Fenster fade_from..fade_to, danach
+    // end_hold halten und ueber out_dur ausblenden.
+    struct KfHand {
+        bool on{false};
+        float in_dur{0.10f};
+        float px{0.0f}, py{0.0f}, pz{0.0f};
+        float rx{0.0f}, ry{0.0f}, rz{0.0f};
+        bool end_on{false};
+        float epx{0.0f}, epy{0.0f}, epz{0.0f};
+        float erx{0.0f}, ery{0.0f}, erz{0.0f};
+        float fade_from{0.6f}, fade_to{1.0f};
+        float end_hold{0.15f};
+        float out_dur{0.20f};
+    };
+    static bool kfh_in_scope(int32_t wid);
+    static int32_t kfh_path_id(int32_t kfid);   // [KFH ADA] Keyframe-Bahn zur Handpose-ID
+    const KfHand* kfh_cfg(int32_t wid) const;   // nullptr = nichts eingestellt
+    void kfh_begin(int32_t wid);                // Einlegen startet an Keyframe 1
+    void kfh_prog(float t);                     // Bahn-Fortschritt 0..1
+    void kfh_end();                             // eingerastet
+    void kfh_cancel();                          // abgebrochen
+    bool kfh_publish();                         // Hand-Dock-Ziel (aus publish_dock)
+    bool kfh_force_on() const { return m_kfh_force != 0; }   // Shell sichtbar halten
+    // [KFH R9] Module mit eigener Waffen-Transform / eigenen Posen (Reload2 ...)
+    void kfh_set_weapon(::REManagedObject* tf);                 // jeden Frame, solange die Waffe fuehrt
+    bool kfh_force_key(int32_t kfid, Key& out);                 // Force-Lage auf der Bahn
+    void kfh_set_base(int32_t kfid, const re4vr::wpose::Bones& b);
+    const re4vr::wpose::Bones* kfh_base(int32_t kfid) const;
+    int32_t kfh_ui_id();                                        // 4002 -> 40021 im Einzelpatronen-Modus
+    void draw_kf_ui();                          // Dev-Baum "RE4VR - Keyframes"
+
     // Allowlisten, die die fuenf Reload-Teile direkt abfragen
     // (ms.KEYFRAME_INSERT 14x, ms.PUSH_WIDS 4x, ms.SHELL_CLONE).
     bool is_keyframe_insert(int32_t wid) const;
@@ -229,6 +265,38 @@ private:
     void shell_preview_apply();
     void eject_preview_apply();
     void push_apply();
+    void wpose_force();   // [WPOSE]
+
+    // [KFH] Laufzeit + Ablage
+    std::unordered_map<int32_t, KfHand> m_kfh{};
+    struct KfhRun {
+        bool active{false};          // Bahn laeuft
+        int32_t wid{0};
+        double t0{0.0};
+        float prog{0.0f};
+        double prog_t{0.0};               // letzte Fortschritts-Meldung (Abbruch-Erkennung)
+        std::optional<double> end_t0{};   // End-Halten/Ausblenden laeuft
+        bool end_mode{false};             // true = End-Pose, false = K1 einfrieren
+        glm::vec3 frz_p{};                // eingefrorene Hand (waffenlokal)
+        glm::quat frz_r{1.0f, 0.0f, 0.0f, 0.0f};
+        glm::vec3 last_p{};               // letzte Hand-Weltlage
+        glm::quat last_r{1.0f, 0.0f, 0.0f, 0.0f};
+        bool have_last{false};
+    } m_kfr{};
+    int m_kfh_force{0};              // 0 aus, 1 = Keyframe 1, 2 = End (nie gespeichert)
+    ::REManagedObject* m_kfh_wtf{nullptr};   // [KFH R9] Waffe vom fuehrenden Modul
+    double m_kfh_wtf_t{-100.0};
+    std::unordered_map<int32_t, re4vr::wpose::Bones> m_kfh_base{};
+    bool m_kfh_pub_prev{false};              // Dock im letzten Aufruf veroeffentlicht
+    void kfh_publish_adv();                  // Adv-Paesse: nach ALLEN Modulen
+    float m_kfh_fblend{0.0f};        // Finger-Blend dieses Frames
+    float m_kfh_fend{0.0f};          // Anteil End-Finger (0..1)
+    int32_t m_kfh_fwid{0};
+    bool kfh_target(glm::vec3& p, glm::quat& r, float& b);
+    void kfh_fingers();
+    void kfh_force_park();
+    nlohmann::json kfh_to_json() const;
+    void kfh_from_json(const nlohmann::json& j);
 
     std::unordered_map<std::string, glm::quat> push_bones();
 

@@ -1800,6 +1800,13 @@ bool RE4VRArmChain::stillzone_aus() {
 }
 
 void RE4VRArmChain::phase_entry(bool hook_enabled) {
+    // [BODY-EPOCH 2026-09-22] Body gewechselt -> gecachte Arm-Joints verwerfen.
+    // Laeuft in jeder Phase, greift aber nur einmal je Wechsel.
+    if (const auto ep = re4vr::body_epoch(); ep != m_body_epoch) {
+        m_body_epoch = ep;
+        drop_body_caches();
+    }
+
     // Lua Z.1302: vor dem ersten on_frame ist keine Phase angemeldet.
     if (!m_phase_hooks_registered) {
         return;

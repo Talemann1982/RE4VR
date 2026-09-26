@@ -235,6 +235,20 @@ public:
     void set_vr_menu_nav_text_scale(float scale) { m_vr_menu_nav_text_scale = std::clamp(scale, 0.5f, 5.0f); }
     void set_vr_menu_detail_text_scale(float scale) { m_vr_menu_detail_text_scale = std::clamp(scale, 0.5f, 3.0f); }
 
+    // [LOGO-GROESSE 25.09.2026] Logo links oben, je Zeile ein Faktor auf die
+    // Kategorie-Schrift: "RESIDENT EVIL 4" und "VR".
+    float get_vr_menu_logo_top_scale() const { return m_vr_menu_logo_top_scale; }
+    float get_vr_menu_logo_vr_scale() const { return m_vr_menu_logo_vr_scale; }
+    void set_vr_menu_logo_top_scale(float scale) { m_vr_menu_logo_top_scale = std::clamp(scale, 0.3f, 2.0f); }
+    void set_vr_menu_logo_vr_scale(float scale) { m_vr_menu_logo_vr_scale = std::clamp(scale, 0.3f, 2.0f); }
+
+    // [LOGO-ABSTAND 26.09.2026] "VR" relativ zur Zeilenhoehe von "RESIDENT EVIL 4" nach oben/unten
+    // (0 = alter Stand), Leerraum zwischen "VR" und MOD OPTIONS in Kategorie-Zeilen (1 = alter Stand).
+    float get_vr_menu_logo_vr_gap() const { return m_vr_menu_logo_vr_gap; }
+    float get_vr_menu_logo_nav_gap() const { return m_vr_menu_logo_nav_gap; }
+    void set_vr_menu_logo_vr_gap(float v) { m_vr_menu_logo_vr_gap = std::clamp(v, -1.0f, 1.0f); }
+    void set_vr_menu_logo_nav_gap(float v) { m_vr_menu_logo_nav_gap = std::clamp(v, -1.0f, 2.0f); }
+
     // [STICK-DEADZONE 11.09.2026] Ab welchem Ausschlag die Sticks im VR-Menue
     // navigieren, scrollen und Slider verstellen (0..1). Frueher fest 0.55.
     // [KATEGORIE-RUNDUNG 11.09.2026] Eckenrundung der roten Markierung in der
@@ -438,6 +452,10 @@ private:
     // [VR-SCHRIFT 11.09.2026]
     float m_vr_menu_nav_text_scale{1.0f};
     float m_vr_menu_detail_text_scale{1.0f};
+    float m_vr_menu_logo_top_scale{0.72f};
+    float m_vr_menu_logo_vr_scale{1.0f};
+    float m_vr_menu_logo_vr_gap{-0.35f};   // [LOGO-ABSTAND]
+    float m_vr_menu_logo_nav_gap{0.25f};   // [LOGO-ABSTAND]
     float m_vr_menu_stick_deadzone{0.7f};   // [STICK-DEADZONE] war fest 0.55 -- zu empfindlich
     float m_vr_menu_nav_rounding{5.0f};     // [KATEGORIE-RUNDUNG] = bisheriges FrameRounding
     float m_vr_menu_repeat_delay{0.45f};    // [STICK-WIEDERHOLUNG] Sekunden bis zur ersten Wiederholung

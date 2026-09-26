@@ -1504,6 +1504,7 @@ void RE4VRReload2::update_reload() {
             m_rev_st.kf_used = true;       // EINE Bahn pro gegriffener Patrone
             m_rev_st.kf_inserted = false;
             m_rev_st.kf_t0 = clock_now();
+            m_adv->kfh_begin(wid);   // [KFH 2026-09-25] Keyframe-Handpose
 
             // Parenting loesen -> die Bahn setzt Welt-Positionen.
             if (m_cart.obj != nullptr && m_cart.parented) {
@@ -2159,6 +2160,12 @@ void RE4VRReload2::apply_shell_pose() {
 
     const auto& s = sit->second;
 
+    // [KFH 2026-09-25] Keyframe-Handpose laeuft -> deren Finger gelten (inkl.
+    // der additiven Daumen/Zeigefinger-Spreizung unten, wie bei der Red9).
+    if (re4vr::lua_get_tribool("__re4_kfh_active") == 1) {
+        return;
+    }
+
     if (m_main != nullptr) {
         m_main->apply_pose(m_shellfade.name, b);
     }
@@ -2457,8 +2464,10 @@ void RE4VRReload2::apply_held_cartridge() {
     // apply_cart_drop bewegt.
     // [SHELL-KEYFRAMES] Keyframe-Preview an (reload_adv, DIREKT abgefragt) ->
     // Clone spawnen, damit man ihn OHNE Patrone in der Hand tunen kann.
-    const bool kfp = (m_adv != nullptr) && m_adv->shell_preview
-                     && m_adv->is_keyframe_insert(wid);
+    RE4VRReloadAdv::Key kfk{};   // [KFH 2026-09-25] Force wie die Vorschau
+    const bool kfp = (m_adv != nullptr)
+                     && ((m_adv->shell_preview && m_adv->is_keyframe_insert(wid))
+                         || m_adv->kfh_force_key(wid, kfk));
 
     if (!(m_rev_st.cart || m_rev_st.preview || m_drop2.active || kfp)) {
         if (m_cart.obj != nullptr) {
@@ -2627,6 +2636,8 @@ void RE4VRReload2::reposition_cart_late() {
                 tt = 0.0f;
             }
 
+            m_adv->kfh_prog(tt);   // [KFH 2026-09-25]
+
             glm::vec3 gp{};
             glm::quat gr{};
 
@@ -2664,6 +2675,7 @@ void RE4VRReload2::reposition_cart_late() {
                 if (clock_now() >= *m_rev_st.kf_hold_t) {
                     m_rev_st.kf_hold_t.reset();
                     m_rev_st.kf_active = false;
+                    m_adv->kfh_end();   // [KFH 2026-09-25] eingerastet
                     // Bahn (Deko) fertig -> Clone entfernen; die +1 sass schon
                     // beim Bahn-Start.
                     m_rev_st.cart = false;
@@ -2679,8 +2691,11 @@ void RE4VRReload2::reposition_cart_late() {
     // [SHELL-KEYFRAMES] Keyframe-Preview: den Clone-Pfad NACHBAUEN, nur relativ
     // zur WAFFE + Tuning-Lage statt zur Hand -> der Clone wird garantiert
     // sichtbar gesetzt.
-    if (m_adv != nullptr && m_adv->shell_preview && m_adv->is_keyframe_insert(wid)) {
-        const auto& sl = m_adv->shell_live;
+    RE4VRReloadAdv::Key kfk{};   // [KFH 2026-09-25] Force wie die Vorschau
+    const bool kff = (m_adv != nullptr) && m_adv->kfh_force_key(wid, kfk);
+
+    if (m_adv != nullptr && ((m_adv->shell_preview && m_adv->is_keyframe_insert(wid)) || kff)) {
+        const auto& sl = kff ? kfk : m_adv->shell_live;
         glm::vec3 gp{};
         glm::quat gr{};
 
@@ -2854,6 +2869,19 @@ void RE4VRReload2::apply_thumb_pass() {
 }
 
 void RE4VRReload2::apply_revolver_pass() {
+    // [KFH 2026-09-25] Keyframe-Handposen: Waffe + Mag-in-hand-Finger melden.
+    if (m_adv != nullptr && m_rcfg.revolver_enabled && m_rwep.wid.has_value()) {
+        m_adv->kfh_set_weapon(m_rwep.tf);
+
+        const auto sit = m_shell.find(*m_rwep.wid);
+        re4vr::wpose::Bones kb{};
+
+        if (sit != m_shell.end() && m_main != nullptr && !sit->second.pose.empty()
+            && m_main->pose_bones(sit->second.pose, kb)) {
+            m_adv->kfh_set_base(*m_rwep.wid, kb);
+        }
+    }
+
     apply_cylinder_pass();
     apply_cylinder_spin_lock();   // _05 Eigenrotation auf Ruhe -> kein Selbstdrehen
     apply_hammer_pass();          // [SINGLE-ACTION] Hahn _02 (nur wp4500)
@@ -4887,7 +4915,7 @@ void RE4VRReload2::rf_apply_hand_pose() {
         return;
     }
 
-    pose_apply(pit->second, b);
+    pose_apply(re4vr::wpose::pick(m_hand_fade.name, pit->second), b);   // [WPOSE]
 
     const glm::vec3 ft = m_hand_fade_thumb;
 
@@ -6015,10 +6043,14 @@ void RE4VRReload2::update_cart_in_hand() {
     // Keyframe-Tuning-Lage + Scale 1 zwingen.
     const int32_t kfp = static_cast<int32_t>(
         re4vr::lua_get_number("__re4_shell_kf_preview", 0.0));
+    // [KFH 2026-09-25] "Force Keyframe 1 / End" zeigt die Patrone an der Bahn-Lage.
+    RE4VRReloadAdv::Key kfk{};
+    const bool kff = m_adv != nullptr && m_bwep.wid.has_value()
+                     && m_adv->kfh_force_key(*m_bwep.wid, kfk);
 
-    if (m_bwep.wid.has_value() && kfp == *m_bwep.wid
+    if (m_bwep.wid.has_value() && (kfp == *m_bwep.wid || kff)
         && m_bwep.cart_joint != nullptr && m_bwep.tf != nullptr && m_adv != nullptr) {
-        const auto& s = m_adv->shell_live;
+        const auto& s = kff ? kfk : m_adv->shell_live;
         glm::vec3 gp{};
         glm::quat gr{};
 
@@ -6156,6 +6188,11 @@ bool RE4VRReload2::start_cart_insert() {
     m_bcart.active = false;
     m_bcart.snd = false;
 
+    // [KFH 2026-09-25] Keyframe-Handpose (nur wenn fuer diese Waffe eingeschaltet).
+    if (m_adv != nullptr) {
+        m_adv->kfh_begin(m_bwep.wid.value_or(0));
+    }
+
     return true;
 }
 
@@ -6200,11 +6237,13 @@ void RE4VRReload2::update_cart_insert() {
     }
 
     if (kf) {
+        m_adv->kfh_prog(t);   // [KFH]
         m_adv->apply_shell_keys(m_bwep.tf, m_bwep.cart_joint, wid, t);
         set_vec3(m_bwep.cart_joint, "set_LocalScale", glm::vec3{1.0f, 1.0f, 1.0f});
 
         if (t >= 1.0f) {
             m_bcart.insert = false;
+            m_adv->kfh_end();   // [KFH] eingerastet
             bolt_add_one();
         }
 
@@ -6295,9 +6334,15 @@ void RE4VRReload2::apply_bolt_pose() {
         name = "TMPSUpport";
     }
 
+    // [KFH 2026-09-25] Keyframe-Handpose laeuft -> deren Finger gelten (wie Red9:
+    // sonst laege die additive Daumen-Spreizung auf den eingestellten Fingern).
+    if (re4vr::lua_get_tribool("__re4_kfh_active") == 1) {
+        return;
+    }
+
     if (const auto it = m_bposes.find(name); it != m_bposes.end()) {
         // Der Bolt-Block blendet NICHT (kein POSE_FADE) -- Blend fest 1.0.
-        pose_apply(it->second, 1.0f);
+        pose_apply(re4vr::wpose::pick(name, it->second), 1.0f);   // [WPOSE]
     }
 
     if (thumb != nullptr
@@ -6462,7 +6507,10 @@ void RE4VRReload2::bolt_on_frame() {
     // der Holster-Grab: das Mesh in die Hand holen (tune = wie active, nur ohne
     // Ammo-Logik). Nur WIR verwalten dieses erzwungene tune (_kf_forced) -> die
     // manuelle Vorschau-Checkbox bleibt unberuehrt.
-    if (static_cast<int32_t>(re4vr::lua_get_number("__re4_shell_kf_preview", 0.0)) == wid) {
+    RE4VRReloadAdv::Key kfk{};   // [KFH 2026-09-25] Force wie die Vorschau
+
+    if (static_cast<int32_t>(re4vr::lua_get_number("__re4_shell_kf_preview", 0.0)) == wid
+        || (m_adv != nullptr && m_adv->kfh_force_key(wid, kfk))) {
         m_bcart.tune = true;
         m_bcart._kf_forced = true;
     } else if (m_bcart._kf_forced) {
@@ -6593,6 +6641,15 @@ void RE4VRReload2::bolt_apply_pass() {
     re4vr::lua_set_managed_object("__re4_reload_shell_joint", m_bwep.cart_joint);
     re4vr::lua_set_managed_object("__re4_reload_weapon_tf", m_bwep.tf);
     re4vr::lua_set_number("__re4_reload_ui_wid", *m_bwep.wid);
+
+    // [KFH 2026-09-25] Keyframe-Handposen: Waffe + Mag-in-hand-Finger melden.
+    if (m_adv != nullptr) {
+        m_adv->kfh_set_weapon(m_bwep.tf);
+
+        if (const auto it = m_bposes.find("Shotgunshell"); it != m_bposes.end()) {
+            m_adv->kfh_set_base(*m_bwep.wid, re4vr::wpose::pick("Shotgunshell", it->second));
+        }
+    }
 
     update_cart_in_hand();
     update_cart_insert();
@@ -7254,8 +7311,12 @@ bool RE4VRReload2::xkf_active(RE4VRReloadAdv::Key& out) {
         return false;
     }
 
+    // [KFH 2026-09-25] "Force Keyframe 1 / End" zeigt den Bolzen an der Bahn-Lage.
+    RE4VRReloadAdv::Key kfk{};
+    const bool kff = m_adv->kfh_force_key(4600, kfk);
     const bool kf_prev =
-        static_cast<int32_t>(re4vr::lua_get_number("__re4_shell_kf_preview", 0.0)) == 4600;
+        static_cast<int32_t>(re4vr::lua_get_number("__re4_shell_kf_preview", 0.0)) == 4600
+        || kff;
     const bool kf_ins = m_arrow.insert && m_adv->has_shell_keys(4600);
 
     // Nachlauf: die Bahn ist durch, wir halten den Bolzen auf dem letzten Keyframe.
@@ -7277,11 +7338,12 @@ bool RE4VRReload2::xkf_active(RE4VRReloadAdv::Key& out) {
             t = 1.0f;
         }
 
+        m_adv->kfh_prog(t);   // [KFH 2026-09-25]
         have = m_adv->shell_pose_at(4600, t, out);
     }
 
     if (!have && kf_prev) {
-        out = m_adv->shell_live;
+        out = kff ? kfk : m_adv->shell_live;
         have = true;
     }
 
@@ -7443,6 +7505,10 @@ void RE4VRReload2::xcheck_insert_proximity() {
         m_arrow.t0 = clock_now();
         m_arrow.insert = true;
         m_arrow.active = false;
+
+        if (m_adv != nullptr) {
+            m_adv->kfh_begin(4600);   // [KFH 2026-09-25] Keyframe-Handpose
+        }
     }
 }
 
@@ -7456,6 +7522,11 @@ void RE4VRReload2::xupdate_arrow_insert() {
 
     if (t >= 1.0f) {
         m_arrow.insert = false;
+
+        if (m_adv != nullptr) {
+            m_adv->kfh_end();   // [KFH 2026-09-25] eingerastet
+        }
+
         xadd_one();
     }
 }
@@ -7471,7 +7542,13 @@ void RE4VRReload2::apply_xbow_pose() {
         return;
     }
 
-    pose_apply(m_xbow_pose, b);
+    // [KFH 2026-09-25] Keyframe-Handpose laeuft -> deren Finger gelten (inkl.
+    // der additiven Daumen-Spreizung unten, wie bei der Red9).
+    if (re4vr::lua_get_tribool("__re4_kfh_active") == 1) {
+        return;
+    }
+
+    pose_apply(re4vr::wpose::pick("XbowBolt", m_xbow_pose), b);   // [WPOSE]
 
     const auto& c = xcfg(m_xwep.wid.value_or(4600));
 
@@ -7520,8 +7597,10 @@ void RE4VRReload2::xbow_soft_reset() {
 void RE4VRReload2::xbow_on_frame() {
     // [HAND-DUMMY] Hand-Bolzen anzeigen bei Vorschau ODER echtem Griff ODER wenn
     // der reload_adv-Keyframe-Preview fuer 4600 an ist.
+    RE4VRReloadAdv::Key kfk{};   // [KFH 2026-09-25] Force wie die Vorschau
     const bool kf_prev =
-        static_cast<int32_t>(re4vr::lua_get_number("__re4_shell_kf_preview", 0.0)) == 4600;
+        static_cast<int32_t>(re4vr::lua_get_number("__re4_shell_kf_preview", 0.0)) == 4600
+        || (m_adv != nullptr && m_xwep.wid.value_or(0) == 4600 && m_adv->kfh_force_key(4600, kfk));
     xupdate_dummy(m_arrow.active || m_arrow.insert || m_arrow.tune || m_xprev || kf_prev);
     xbow_refresh();
 
@@ -7567,8 +7646,20 @@ void RE4VRReload2::xbow_apply_pass() {
     re4vr::lua_set_managed_object("__re4_reload_weapon_tf", m_xwep.tf);
     re4vr::lua_set_nil("__re4_reload_shell_joint");
 
+    // [KFH 2026-09-25] Keyframe-Handposen: Waffe + Mag-in-hand-Finger melden;
+    // Force haelt den Bolzen wie die Vorschau.
+    RE4VRReloadAdv::Key kfk{};
+    bool kff = false;
+
+    if (m_adv != nullptr) {
+        m_adv->kfh_set_weapon(m_xwep.tf);
+        m_adv->kfh_set_base(4600, re4vr::wpose::pick("XbowBolt", m_xbow_pose));
+        kff = m_adv->kfh_force_key(4600, kfk);
+    }
+
     const bool kf_prev =
-        static_cast<int32_t>(re4vr::lua_get_number("__re4_shell_kf_preview", 0.0)) == 4600;
+        static_cast<int32_t>(re4vr::lua_get_number("__re4_shell_kf_preview", 0.0)) == 4600
+        || kff;
 
     // [KF_HOLD] Insert gerade beendet -> Haltefenster oeffnen.
     if (m_xkf_prev_ins && !m_arrow.insert) {
@@ -8470,12 +8561,12 @@ void RE4VRReload2::apply_bowknob_pose() {
 
     // LINKE Hand: am Knopf
     if (m_bow_st.grabbed || m_bow_st.preview) {
-        m_main->apply_pose_bones(m_bowknob, 1.0f);
+        m_main->apply_pose_bones(re4vr::wpose::pick("bowknob", m_bowknob), 1.0f);   // [WPOSE]
     }
 
     // RECHTE Hand: beim Zielen die native Reload-Bewegung ueberspielen
     if (m_bow_st.has_bow && re4vr::lua_get_tribool("__vr_aim_input") == 1) {
-        m_main->apply_pose_bones(m_bow_aim, 1.0f);
+        m_main->apply_pose_bones(re4vr::wpose::pick("bow-aim", m_bow_aim), 1.0f);   // [WPOSE]
     }
 }
 
@@ -8773,7 +8864,7 @@ void RE4VRReload2::r9_apply_pose(const std::string& name, bool with_thumb, float
         return;
     }
 
-    if (!pose_apply(it->second, blend)) {
+    if (!pose_apply(re4vr::wpose::pick(name, it->second), blend)) {   // [WPOSE]
         return;
     }
 
@@ -9645,6 +9736,11 @@ void RE4VRReload2::r9_check_insert() {
     // Clip nicht mehr an der Hand -> gleitet jetzt von oben in die Kammer
     m_r9state.active = false;
 
+    // [KFH 2026-09-24] Keyframe-Handpose (nur wenn fuer diese Bahn eingeschaltet).
+    if (m_adv != nullptr) {
+        m_adv->kfh_begin((m_r9clip.mode == "single") ? 40021 : 4002);
+    }
+
     // [NO_LAG] Klon war ans L_Hand geparentet -> fuer die Welt-Animation entkoppeln.
     if (m_r9clip.parented && tf != nullptr) {
         re4vr::call_safe<void*>(tf, "set_Parent", nullptr);
@@ -9688,6 +9784,11 @@ bool RE4VRReload2::r9_update_insert() {
         m_r9ins.kf_lead = true;
     }
 
+    // [KFH 2026-09-24] Bahn-Fortschritt fuer die Keyframe-Handpose.
+    if (kf) {
+        m_adv->kfh_prog(t);
+    }
+
     // [KF_HOLD] Bei Keyframe-Bahn den Clip nach dem Bahn-Ende noch kurz auf dem
     // LETZTEN Keyframe stehen lassen, bevor r9_destroy ihn wegnimmt -- sonst
     // blitzt er einen Frame an der alten Lage auf.
@@ -9710,6 +9811,10 @@ bool RE4VRReload2::r9_update_insert() {
     if (fin) {
         // Stripper-Clip -> auf Max-Cap fuellen; Einzelpatrone -> nur +1
         m_r9ins.active = false;
+
+        if (kf) {
+            m_adv->kfh_end();   // [KFH] eingerastet
+        }
 
         if (m_r9clip.mode == "single") {
             r9_add_single();
@@ -9955,8 +10060,31 @@ void RE4VRReload2::red9_on_frame() {
     // [SHELL-KEYFRAMES] Keyframe-Tuning: der "einblenden"-Toggle (reload_adv)
     // zeigt den Clip an der Tuning-Lage. Der Modus kommt aus __re4_r9_kf_mode.
     // ui_wid = mode-abhaengige virtuelle wid (40021 single / 4002 strip).
-    if (m_adv != nullptr && m_adv->shell_preview
-        && (m_adv->is_keyframe_insert(4002) || m_adv->is_keyframe_insert(40021))
+    // [KFH 2026-09-24] Keyframe-Handposen: Waffe + Tragen-Posen melden; "Force
+    // Keyframe 1 / End" zeigt den Clip wie die Keyframe-Vorschau.
+    bool kfh_force = false;
+
+    if (m_adv != nullptr) {
+        m_adv->kfh_set_weapon(rget_gun_tf());
+
+        // Jeden Frame: Leon und Ada teilen die IDs 4002/40021, es gilt die
+        // Pose der Waffe, die gerade gefuehrt wird.
+        if (const auto it = m_r9poses.find("Red9Clip"); it != m_r9poses.end()) {
+            m_adv->kfh_set_base(4002, re4vr::wpose::pick("Red9Clip", it->second));
+        }
+
+        if (const auto it = m_r9poses.find("Red9Single"); it != m_r9poses.end()) {
+            m_adv->kfh_set_base(40021, re4vr::wpose::pick("Red9Single", it->second));
+        }
+
+        kfh_force = m_adv->kfh_force_on()
+            && (m_adv->kfh_cfg(4002) != nullptr || m_adv->kfh_cfg(40021) != nullptr);
+    }
+
+    if (m_adv != nullptr
+        && ((m_adv->shell_preview
+             && (m_adv->is_keyframe_insert(4002) || m_adv->is_keyframe_insert(40021)))
+            || kfh_force)
         && !m_r9state.active && !m_r9ins.active) {
         m_r9clip.mode = (re4vr::lua_get_string("__re4_r9_kf_mode") == "single")
             ? "single" : "strip";
@@ -10002,7 +10130,8 @@ void RE4VRReload2::red9_apply_pass() {
         // [SHELL-KEYFRAMES] Keyframe-Preview -> Clip an die Tuning-Lage (relativ
         // zur Waffe) statt an die Hand, damit man die Bahn am Desktop ausrichtet.
         if (m_r9_kf_preview && m_adv != nullptr && m_r9clip.obj != nullptr) {
-            const auto& sl = m_adv->shell_live;
+            RE4VRReloadAdv::Key sl = m_adv->shell_live;
+            m_adv->kfh_force_key((m_r9clip.mode == "single") ? 40021 : 4002, sl);   // [KFH]
             auto* gtf = rget_gun_tf();
             glm::vec3 gp{};
             glm::quat gr{};
@@ -10037,7 +10166,12 @@ void RE4VRReload2::red9_apply_pass() {
     float b = 0.0f;
 
     if (pose_fade_step(m_r9_fade, want, b)) {
-        r9_apply_pose(m_r9_fade.name, m_r9_fade.flag, b);
+        // [KFH 2026-09-24] Keyframe-Handpose laeuft -> deren Finger gelten.
+        // Gemessen: die additive Daumen/Zeigefinger-Spreizung lag sonst auf
+        // den eingestellten Fingern.
+        if (re4vr::lua_get_tribool("__re4_kfh_active") != 1) {
+            r9_apply_pose(m_r9_fade.name, m_r9_fade.flag, b);
+        }
     }
 }
 
@@ -10149,6 +10283,19 @@ void RE4VRReload2::red9_ui() {
         if (ImGui::InputText("Einzelpatrone Part##rsingp", sb, sizeof(sb))) {
             c.single_part = sb;
             ch = true;
+        }
+
+        // [PART-SLIDER 2026-09-24] Zweiter Part zur Einzelpatrone (Boden der
+        // Huelse suchen): erster Eintrag bleibt, -1 = kein Zusatz-Part.
+        {
+            const auto sp = parse_parts(c.single_part);
+            const int32_t first = sp.empty() ? 22 : sp[0];
+            int extra = (sp.size() >= 2) ? sp[1] : -1;
+
+            if (ImGui::SliderInt("Einzelpatrone Zusatz-Part (-1 = keiner)##rsingx", &extra, -1, 40)) {
+                c.single_part = std::to_string(first) + (extra >= 0 ? "," + std::to_string(extra) : "");
+                ch = true;
+            }
         }
 
         ImGui::TextColored(ImVec4{0.53f, 0.53f, 0.53f, 1.0f},
@@ -10891,6 +11038,8 @@ std::optional<bool> RE4VRReload2::set_mag_in_hand(bool active) {
 // geteilten Globals -- genau wie vorher.
 // ============================================================================
 void RE4VRReload2::on_frame() {
+    tick_body_epoch();
+
     // Fuer die Hooks gespiegelt: sie duerfen pro Aufruf nicht in den Lua-State
     // greifen (isEnableFire und SoundContainer.trigger feuern sehr oft).
     m_frame_is_gameplay = re4vr::lua_get_tribool("__re4_frame_is_gameplay") == 1;
@@ -10954,6 +11103,47 @@ void RE4VRReload2::tick_saveload_reset() {
     m_pe_cache = nullptr;
     m_rifwep.tf = nullptr;
     m_bwep.tf = nullptr;
+}
+
+// [BODY-EPOCH 2026-09-22] Spieler-Body gewechselt (Save-Load/Tod, auch "weg und
+// gleiche Adresse zurueck") -> NUR gemerkte Engine-Zeiger verwerfen, damit die
+// vorhandenen Neu-Hol-Zweige greifen. Keine Engine-Aufrufe, keine Ladezustaende.
+void RE4VRReload2::tick_body_epoch() {
+    const auto e = re4vr::body_epoch();
+
+    if (e == m_body_epoch) {
+        return;
+    }
+
+    m_body_epoch = e;
+    drop_body_caches();
+}
+
+void RE4VRReload2::drop_body_caches() {
+    // Dieselben drei wie tick_saveload_reset (idempotent).
+    m_pe_cache = nullptr;
+    m_rifwep.tf = nullptr;
+    m_bwep.tf = nullptr;
+
+    // Posen-Map haengt an der Body-Transform (Vergleich per Adresse). Nur den
+    // Schluessel verwerfen -- pose_map() leert und baut die Map beim naechsten
+    // Aufruf selbst (kein Zugriff auf den Container von hier).
+    m_pmap_tf = nullptr;
+
+    // Revolver: rev_refresh_weapon setzt bei tf == nullptr genau so zurueck.
+    m_rwep = RevWep{};
+
+    // Armbrust: xbow_refresh holt tf bei nullptr neu.
+    m_xwep.tf = nullptr;
+
+    // Bogen: bow_resolve holt tf/Joints bei nullptr neu (dort bow_drop_refs).
+    m_bow_st.tf = nullptr;
+    m_bow_st.j01 = nullptr;
+    m_bow_st.j04 = nullptr;
+    m_bow_st.j05 = nullptr;
+    m_bow_st.j06 = nullptr;
+    m_bow_st.j07 = nullptr;
+    m_bow_st.mesh = nullptr;
 }
 
 void RE4VRReload2::tick_merc_round() {

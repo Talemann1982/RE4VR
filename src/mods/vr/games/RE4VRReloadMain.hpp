@@ -208,6 +208,19 @@ public:
     bool apply_pose_bones(const std::unordered_map<std::string, glm::quat>& bones, float blend);
     std::vector<std::string> pose_names() const;
 
+    // [WPOSE 2026-09-24] Handposen pro Waffe: Menue (aus ReloadAdv gezeichnet)
+    // und "Erzwingen" (Adv ruft es in den spaeten Paessen).
+    void draw_wpose_ui();
+    void wpose_force_apply();
+    bool apply_pose_as(const std::string& alias, const std::string& base, float blend);   // [END_POSE]
+    bool pose_bones(const std::string& name, re4vr::wpose::Bones& out);   // [KFH] Bones einer Pose (inkl. [WPOSE])
+
+    // [KFH 2026-09-24] Keyframe-Handposen (Baum "RE4VR - Keyframes" in ReloadAdv):
+    // Mag-in-hand-Finger der Waffe als Basis, Finger-Editor fuer "(kf1)"/"(kfend)".
+    bool kfh_base_bones(int32_t wid, re4vr::wpose::Bones& out);
+    void kfh_finger_ui(int32_t wid, const std::string& name, const char* copy_label, bool from_kf1);
+    void kfh_save() { save_cfg(); }
+
     // [SHELL-RATIO-SYNC] EIN Schalter fuer Leon UND Ada.
     int32_t shotgun_ratio_get(int32_t wid);
 

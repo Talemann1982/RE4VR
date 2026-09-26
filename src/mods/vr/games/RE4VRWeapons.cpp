@@ -7245,6 +7245,51 @@ bool RE4VRWeapons::ts_suppress_now() {
         && re4vr::lua_get_tribool("__re4_boat_active") != 1;
 }
 
+// [BODY-EPOCH 2026-09-22] Nur eigenen Zustand verwerfen -- KEINE Engine-
+// Aufrufe auf den alten Objekten (kein set_Parent, kein destroy, kein
+// knife_mesh_vis). drop() gibt nur die eigene add_ref-Referenz frei.
+// Vorhandene Resets (ts_saveload_tick, grenade_cache_guard, knife_home_guard)
+// bleiben unveraendert; hier wird dasselbe nur zusaetzlich auch fuer den Fall
+// "Body weg und mit gleicher Adresse zurueck" getan.
+void RE4VRWeapons::drop_body_caches() {
+    // Wurflinien-Controller: wie ts_saveload_tick (drop mit release).
+    drop(m_ts_ctrl);
+
+    // Granaten-Generator/Szene: wie grenade_cache_guard -- BEWUSST ohne release.
+    m_grenade_gen.obj = nullptr;
+    m_grenade_gen.reffed = false;
+    m_scene_cache.obj = nullptr;
+    m_scene_cache.reffed = false;
+
+    // Messer-Sound-Container der alten Szene.
+    drop(m_knife_snd_last);
+
+    // Messerwurf im Flug: Flug beenden, ohne das alte Messer umzuhaengen.
+    // detached=false verhindert knife_reattach (set_Parent) auf der Leiche.
+    m_kfly.active = false;
+    m_kfly.detached = false;
+    m_kfly.hidden = false;
+    m_kfly.stuck = false;
+    m_kfly.snd_return = false;
+    drop(m_kfly.go);
+    drop(m_kfly.tf);
+    drop(m_kfly.home_parent);
+    drop(m_kfly.saved_parent);
+    drop(m_kfly.stick_parent);
+    drop(m_kfly.stick_etf);
+    drop(m_kfly.home_ctx);
+    drop(m_kfly.rr_go);
+
+    // Steck-Klone: nur loslassen, KEIN destroy (Traeger gehoert zur alten Szene).
+    for (auto& s : m_kstick) {
+        drop(s.tf);
+        drop(s.mesh);
+        drop(s.go);
+        s.until = 0.0;
+        s.born = 0.0;
+    }
+}
+
 // [THROWSIGHT SAVE-LOAD 19.09.2026] s. RE4VRWeapons.hpp
 void RE4VRWeapons::ts_saveload_tick() {
     auto* body = re4vr::fc::body_go();
@@ -7887,6 +7932,13 @@ void RE4VRWeapons::on_frame() {
 
     if (!ensure_init()) {
         return;
+    }
+
+    // [BODY-EPOCH 2026-09-22] Body gewechselt (Save-Load/Tod, auch "weg und
+    // mit gleicher Adresse zurueck"): gemerkte Zeiger an der Leiche verwerfen.
+    if (const auto ep = re4vr::body_epoch(); ep != m_body_epoch) {
+        m_body_epoch = ep;
+        drop_body_caches();
     }
 
     // [THROWSIGHT SAVE-LOAD 19.09.2026] Vor allem anderen: nach Tod/Laden den

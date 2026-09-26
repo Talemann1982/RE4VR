@@ -60,6 +60,8 @@ public:
 
     // Von den nach Lua exportierten Zeichen-Funktionen gerufen (Public-Menue).
     void draw_public_crosshair_off();
+    // [DOT_CROSSHAIR] RE4VRUi fragt das fuer Gui_ui2041 (Mittel-Dot / Scope-Ausblendung).
+    bool dot_crosshair() const { return m_cfg.dot_crosshair; }
     void draw_public_laser_color();
     void draw_public_reticle_color();
     void draw_public_reticle_size();
@@ -88,6 +90,8 @@ private:
     struct Cfg {
         bool bullet_hook{true};
         bool crosshair_off{false};
+        bool dot_crosshair{false};   // [DOT_CROSSHAIR 26.09.2026] Gui_ui2041 statt Gui_ui2040
+        float dot_size{1.0f};        // [DOT_CROSSHAIR] eigene Groesse, NICHT je Waffe
         std::unordered_map<std::string, float> reticle_scale{};
         bool reticle_color{false};
         float reticle_r{1.0f}, reticle_g{0.0f}, reticle_b{0.0f};
@@ -199,6 +203,11 @@ private:
     bool hud_state_empty();
     double m_hud_empty_t{0.0};
     bool   m_hud_empty_val{false};
+
+    // [HUD INVENTAR 2026-09-25] Koffer offen -> Hand-HUD-Gruppe loslassen.
+    bool hud_inventory_open();
+    double m_hud_inv_t{0.0};
+    bool   m_hud_inv_val{false};
     LaserCfg m_laser{};
 
     RefHandle m_scene{};

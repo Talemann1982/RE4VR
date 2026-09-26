@@ -1915,6 +1915,25 @@ void RE4VRMerc::bow_unpin() {
     m_bowp_pinned = false;
 }
 
+// [BODY-EPOCH 2026-09-22] Nach Save-Load/Tod bleiben die alten Objekte
+// ansprechbar -- Schreiben auf die Leiche wirft nicht, die Selbstheilungen
+// (pcall-Fehler, opt_bool leer, Namensluecke) greifen dann nicht sicher.
+// Nur die eigenen Handles loslassen (release wie on_lua_state_destroyed),
+// KEIN set_ParentJoint/Engine-Aufruf auf dem alten Bogen: wie beim Reset
+// bleibt er, wo er ist, der Pin-Zweig setzt den neuen Bogen neu.
+void RE4VRMerc::drop_body_caches() {
+    drop(m_bowp_go);
+    drop(m_bowp_tf);
+    m_bowp_pinned = false;
+
+    drop(m_br_hu);
+
+    // Kopf/Haar- und Voll-Aus-Meshes: der CHECK_EVERY-Zweig sammelt neu
+    // (!m_hh_set). m_full_hidden faellt mit -- der neue Body ist frisch.
+    clear_hh();
+    clear_all_meshes();
+}
+
 void RE4VRMerc::update_bow_pin() {
     const bool want = m_bow_pin_on
         && re4vr::lua_get_tribool("__re4_in_mercs") == 1
@@ -3215,6 +3234,12 @@ void RE4VRMerc::on_lua_state_destroyed(sol::state& lua) {
 void RE4VRMerc::on_frame() {
     if (re4vr::mods_gated()) {
         return;
+    }
+
+    // [BODY-EPOCH 2026-09-22] vor allen Cache-Nutzern dieses Ticks
+    if (re4vr::body_epoch() != m_body_epoch) {
+        m_body_epoch = re4vr::body_epoch();
+        drop_body_caches();
     }
 
     ensure_types();

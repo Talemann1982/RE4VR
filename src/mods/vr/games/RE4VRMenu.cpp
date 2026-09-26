@@ -96,6 +96,22 @@ void RE4VRMenu::load_menu_editor_cfg() {
             g_framework->set_vr_menu_detail_text_scale(j["vr_content_text_scale"].get<float>());
         }
 
+        if (j.contains("vr_logo_top_scale") && j["vr_logo_top_scale"].is_number()) {
+            g_framework->set_vr_menu_logo_top_scale(j["vr_logo_top_scale"].get<float>());
+        }
+
+        if (j.contains("vr_logo_vr_scale") && j["vr_logo_vr_scale"].is_number()) {
+            g_framework->set_vr_menu_logo_vr_scale(j["vr_logo_vr_scale"].get<float>());
+        }
+
+        if (j.contains("vr_logo_vr_gap") && j["vr_logo_vr_gap"].is_number()) {
+            g_framework->set_vr_menu_logo_vr_gap(j["vr_logo_vr_gap"].get<float>());
+        }
+
+        if (j.contains("vr_logo_nav_gap") && j["vr_logo_nav_gap"].is_number()) {
+            g_framework->set_vr_menu_logo_nav_gap(j["vr_logo_nav_gap"].get<float>());
+        }
+
         if (j.contains("vr_stick_deadzone") && j["vr_stick_deadzone"].is_number()) {
             g_framework->set_vr_menu_stick_deadzone(j["vr_stick_deadzone"].get<float>());
         }
@@ -138,6 +154,10 @@ void RE4VRMenu::save_menu_editor_cfg() {
         j["vr_panel_distance"] = g_framework->get_vr_menu_panel_distance();
         j["vr_category_text_scale"] = g_framework->get_vr_menu_nav_text_scale();
         j["vr_content_text_scale"] = g_framework->get_vr_menu_detail_text_scale();
+        j["vr_logo_top_scale"] = g_framework->get_vr_menu_logo_top_scale();
+        j["vr_logo_vr_scale"] = g_framework->get_vr_menu_logo_vr_scale();
+        j["vr_logo_vr_gap"] = g_framework->get_vr_menu_logo_vr_gap();
+        j["vr_logo_nav_gap"] = g_framework->get_vr_menu_logo_nav_gap();
         j["vr_stick_deadzone"] = g_framework->get_vr_menu_stick_deadzone();
         j["vr_category_rounding"] = g_framework->get_vr_menu_nav_rounding();
         j["vr_stick_repeat_delay"] = g_framework->get_vr_menu_repeat_delay();
@@ -628,7 +648,7 @@ void RE4VRMenu::draw_public() {
 
     RE4VRCrosshair::get()->draw_public_crosshair_off(); // Crosshair: Ueberschrift + Disable Crosshair
     RE4VRCrosshair::get()->draw_public_reticle_color(); //            Farbauswahl
-    RE4VRCrosshair::get()->draw_public_reticle_size();  //            Crosshair Size (nur mit Waffe)
+    // [SIZE_OBEN 26.09.2026] "Crosshair Size" zeichnet jetzt draw_public_crosshair_off selbst (ueber dem Dot-Schalter).
     RE4VRCrosshair::get()->draw_public_laser_color();   // Select Laser Color
 
     // [MISCELLANEOUS 11.09.2026] Die freien Schalter bekommen eine eigene
@@ -687,6 +707,48 @@ void RE4VRMenu::draw_menu_editor() {
         // [BIS 5.0 16.09.2026] Ueber 3.0 wird die Schrift weicher (Oversample 3).
         if (ImGui::SliderFloat("Category Text Size", &nav_scale, 0.5f, 5.0f, "%.2f")) {
             g_framework->set_vr_menu_nav_text_scale(nav_scale);
+        }
+
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            save_menu_editor_cfg();
+        }
+
+        // [LOGO-GROESSE 25.09.2026] Die zwei Logo-Zeilen links oben getrennt.
+        float logo_top = g_framework->get_vr_menu_logo_top_scale();
+
+        if (ImGui::SliderFloat("Logo Resident Evil 4 Size", &logo_top, 0.3f, 2.0f, "%.2f")) {
+            g_framework->set_vr_menu_logo_top_scale(logo_top);
+        }
+
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            save_menu_editor_cfg();
+        }
+
+        float logo_vr = g_framework->get_vr_menu_logo_vr_scale();
+
+        if (ImGui::SliderFloat("Logo VR Size", &logo_vr, 0.3f, 2.0f, "%.2f")) {
+            g_framework->set_vr_menu_logo_vr_scale(logo_vr);
+        }
+
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            save_menu_editor_cfg();
+        }
+
+        // [LOGO-ABSTAND 26.09.2026]
+        float logo_vr_gap = g_framework->get_vr_menu_logo_vr_gap();
+
+        if (ImGui::SliderFloat("Logo VR Gap", &logo_vr_gap, -1.0f, 1.0f, "%.2f")) {
+            g_framework->set_vr_menu_logo_vr_gap(logo_vr_gap);
+        }
+
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            save_menu_editor_cfg();
+        }
+
+        float logo_nav_gap = g_framework->get_vr_menu_logo_nav_gap();
+
+        if (ImGui::SliderFloat("Logo Menu Gap", &logo_nav_gap, -1.0f, 2.0f, "%.2f")) {
+            g_framework->set_vr_menu_logo_nav_gap(logo_nav_gap);
         }
 
         if (ImGui::IsItemDeactivatedAfterEdit()) {
@@ -820,7 +882,7 @@ void RE4VRMenu::draw_dev() {
         std::function<void()> draw;
     };
 
-    std::array<Entry, 24> entries{{
+    std::array<Entry, 25> entries{{
         {"Arm Chain",            [] { RE4VRArmChain::get()->draw_dev_ui(); }},
         {"Binding",              [] { RE4VRBinding::get()->draw_dev_ui(); }},
         {"Choke",                [] { RE4VRChoke::get()->draw_dev_ui(); }},
@@ -830,6 +892,7 @@ void RE4VRMenu::draw_dev() {
         {"Guestures",            [] { RE4VRGuestures::get()->draw_dev_ui(); }},
         {"Holster",              [] { RE4VRHolster::get()->draw_dev_ui(); }},
         {"Jiggle",               [] { RE4VRJiggle::get()->draw_dev_ui(); }},
+        {"Keyframes",            [] { RE4VRReload::get()->draw_dev_kf(); }},   // [KFH]
         {"Materials",            [] { RE4VRMaterials::get()->draw_dev_ui(); }},
         {"Menu Editor",          [this] { draw_menu_editor(); }},
         {"Mercenaries (DLC)",    [] { RE4VRMerc::get()->draw_dev_ui(); }},

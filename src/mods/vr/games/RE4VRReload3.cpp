@@ -1775,7 +1775,7 @@ void RE4VRReload3::cf_apply_hand_pose() {
         return;
     }
 
-    pose_apply(pit->second, b);
+    pose_apply(re4vr::wpose::pick(m_c_hand_fade.name, pit->second), b);   // [WPOSE]
 
     const glm::vec3 ft = m_c_hand_fade_thumb;
 
@@ -2840,6 +2840,7 @@ void RE4VRReload3::hc_update_reload() {
             m_hrev.kf_used = true;
             m_hrev.kf_inserted = false;
             m_hrev.kf_t0 = clock_now();
+            m_adv->kfh_begin(wid);   // [KFH 2026-09-25] Keyframe-Handpose
 
             if (m_hcart.obj != nullptr && m_hcart.parented) {
                 auto* tf = re4vr::call_safe<::REManagedObject*>(m_hcart.obj, "get_Transform");
@@ -3323,6 +3324,12 @@ void RE4VRReload3::hc_apply_shell_pose() {
 
     const auto& s = m_hshell;
 
+    // [KFH 2026-09-25] Keyframe-Handpose laeuft -> deren Finger gelten (inkl.
+    // der additiven Spreizung unten, wie bei der Red9).
+    if (re4vr::lua_get_tribool("__re4_kfh_active") == 1) {
+        return;
+    }
+
     if (m_main != nullptr) {
         m_main->apply_pose(m_hshell_fade.name, b);
     }
@@ -3561,8 +3568,10 @@ void RE4VRReload3::hc_apply_held_cartridge() {
     const int32_t wid = *m_hwep.wid;
     // [SHELL-KEYFRAMES] Keyframe-Preview an -> Clone spawnen (zum Tunen ohne
     // Patrone in der Hand).
-    const bool kfp = (m_adv != nullptr) && m_adv->shell_preview
-                     && m_adv->is_keyframe_insert(wid);
+    RE4VRReloadAdv::Key kfk{};   // [KFH 2026-09-25] Force wie die Vorschau
+    const bool kfp = (m_adv != nullptr)
+                     && ((m_adv->shell_preview && m_adv->is_keyframe_insert(wid))
+                         || m_adv->kfh_force_key(wid, kfk));
 
     if (!(m_hrev.cart || m_hrev.preview || m_hdrop.active || kfp)) {
         if (m_hcart.obj != nullptr) {
@@ -3670,6 +3679,8 @@ void RE4VRReload3::hc_reposition_cart_late() {
                 tt = 0.0f;
             }
 
+            m_adv->kfh_prog(tt);   // [KFH 2026-09-25]
+
             RE4VRReloadAdv::Key k{};
 
             if (m_adv->shell_pose_at(wid, tt, k)) {
@@ -3706,6 +3717,7 @@ void RE4VRReload3::hc_reposition_cart_late() {
                 if (clock_now() >= *m_hrev.kf_hold_t) {
                     m_hrev.kf_hold_t.reset();
                     m_hrev.kf_active = false;
+                    m_adv->kfh_end();   // [KFH 2026-09-25] eingerastet
                     m_hrev.cart = false;
                 }
             }
@@ -3717,8 +3729,11 @@ void RE4VRReload3::hc_reposition_cart_late() {
     }
 
     // [SHELL-KEYFRAMES] Keyframe-Preview: Clone an der Waffe + Tuning-Lage.
-    if (m_adv != nullptr && m_adv->shell_preview && m_adv->is_keyframe_insert(wid)) {
-        const auto& sl = m_adv->shell_live;
+    RE4VRReloadAdv::Key kfk{};   // [KFH 2026-09-25] Force wie die Vorschau
+    const bool kff = (m_adv != nullptr) && m_adv->kfh_force_key(wid, kfk);
+
+    if (m_adv != nullptr && ((m_adv->shell_preview && m_adv->is_keyframe_insert(wid)) || kff)) {
+        const auto& sl = kff ? kfk : m_adv->shell_live;
 
         if (tf != nullptr) {
             // [NO_LAG BAHN] auch beim Einstellen kein Nachziehen
@@ -3961,6 +3976,17 @@ void RE4VRReload3::hc_apply_thumb_pass() {
 }
 
 void RE4VRReload3::hc_apply_pass() {
+    // [KFH 2026-09-25] Keyframe-Handposen: Waffe + Mag-in-hand-Finger melden.
+    if (m_adv != nullptr && m_hcfg.revolver_enabled && m_hwep.wid.has_value()) {
+        m_adv->kfh_set_weapon(m_hwep.tf);
+
+        re4vr::wpose::Bones kb{};
+
+        if (m_main != nullptr && !m_hshell.pose.empty() && m_main->pose_bones(m_hshell.pose, kb)) {
+            m_adv->kfh_set_base(*m_hwep.wid, kb);
+        }
+    }
+
     hc_apply_cylinder_pass();
     hc_apply_cylinder_spin_lock();
     hc_apply_hammer_pass();
@@ -4733,7 +4759,7 @@ void RE4VRReload3::rl_apply_pose() {
         return;
     }
 
-    pose_apply(m_rl_warhead_pose, b);
+    pose_apply(re4vr::wpose::pick(p.pose.empty() ? std::string{"warhead"} : p.pose, m_rl_warhead_pose), b);   // [WPOSE]
 
     auto* bt = body_tf();
 
@@ -5937,7 +5963,7 @@ void RE4VRReload3::ft_apply_poses() {
     }
 
     // RECHTE Hand: IMMER flamehand (no-aim + aim), mit Palm-Offset.
-    ft_pose_apply(m_pose_flamehand,
+    ft_pose_apply(re4vr::wpose::pick("flamehand", m_pose_flamehand),   // [WPOSE]
                   {{"R_Palm", quat_from_euler(m_ftcfg.fh_rx, m_ftcfg.fh_ry, m_ftcfg.fh_rz)}},
                   1.0f);
 
@@ -5949,13 +5975,13 @@ void RE4VRReload3::ft_apply_poses() {
     float b = 0.0f;
 
     if (pose_fade_step(m_ft_fade, want, b)) {
-        ft_pose_apply(m_pose_flamecanister,
+        ft_pose_apply(re4vr::wpose::pick("flamecanister", m_pose_flamecanister),   // [WPOSE]
                       {{"L_Thumb1", quat_from_euler(m_ftcfg.ca_trx * b, m_ftcfg.ca_try * b,
                                                     m_ftcfg.ca_trz * b)}},
                       b);
     } else if (m_ft_pose_prev.support
                || re4vr::lua_get_number("__vr_support_blend_factor", 0.0) > 0.05) {
-        ft_pose_apply(m_pose_flamesupport, {}, 1.0f);
+        ft_pose_apply(re4vr::wpose::pick("flamesupport", m_pose_flamesupport), {}, 1.0f);   // [WPOSE]
     }
 }
 
@@ -6818,7 +6844,57 @@ void RE4VRReload3::tick_saveload_reset() {
     m_cwep.tf = nullptr;
 }
 
+// [BODY-EPOCH 2026-09-22] Spieler-Body gewechselt (Save-Load/Tod, auch "weg und
+// gleiche Adresse zurueck") -> NUR gemerkte Engine-Zeiger verwerfen, damit die
+// vorhandenen Neu-Hol-Zweige greifen. Keine Engine-Aufrufe, keine Ladezustaende.
+void RE4VRReload3::tick_body_epoch() {
+    const auto e = re4vr::body_epoch();
+
+    if (e == m_body_epoch) {
+        return;
+    }
+
+    m_body_epoch = e;
+    drop_body_caches();
+}
+
+void RE4VRReload3::drop_body_caches() {
+    // Dieselben zwei wie tick_saveload_reset (idempotent).
+    m_pe_cache = nullptr;
+    m_cwep.tf = nullptr;
+
+    // Posen-Map haengt an der Body-Transform (Vergleich per Adresse). Nur den
+    // Schluessel verwerfen -- pose_map() leert und baut die Map beim naechsten
+    // Aufruf selbst (kein Zugriff auf den Container von hier).
+    m_pmap_tf = nullptr;
+
+    // Handcannon: hc_refresh_weapon setzt bei tf == nullptr genau so zurueck.
+    m_hwep = HcWep{};
+
+    // RL: rl_refresh holt tf bei nullptr neu, die Joints jeden Frame.
+    m_rlwep.tf = nullptr;
+    m_rlwep.warhead_joint = nullptr;
+    m_rlwep.dock_joint = nullptr;
+
+    // FT: ft_refresh holt tf bei nullptr neu, die Joints jeden Frame.
+    // safety_rest_rot ist die BIND-Pose (Konstante) -> bleibt.
+    m_ftwep.tf = nullptr;
+    m_ftwep.safety_joint = nullptr;
+    m_ftwep.tank_joint = nullptr;
+
+    // Feuer-Loop: ft_fire_sound_stop holt den Container bei nullptr frisch;
+    // m_fire_snd.on (Zustand) bleibt.
+    m_fire_snd.scn = nullptr;
+    m_fire_snd.go = nullptr;
+
+    // Spieler-HitPoint-Adressen (Schadens-Boost-Ausschluss): beim naechsten
+    // Treffer sofort neu holen. Die Liste selbst NICHT hier leeren -- sie wird
+    // nur im Schadens-Hook gelesen/geschrieben (evtl. anderer Thread).
+    m_ft_pc_t = -999.0;
+}
+
 void RE4VRReload3::on_frame() {
+    tick_body_epoch();
     tick_saveload_reset();
     chicago_on_frame();
     hc_on_frame();

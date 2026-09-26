@@ -27,6 +27,7 @@
 #include <vector>   // [TAUNT-WAV] taunt_wav_next nimmt den Shuffle-Beutel
 #include <functional>
 #include <memory>
+#include <unordered_map>   // [WPOSE]
 
 #include <json.hpp>
 
@@ -500,6 +501,57 @@ std::optional<int32_t> equip_wid();
 // Beim Script-Reset und bei jedem Frame-Wechsel.
 void reset();
 } // namespace fc
+
+// [WPOSE 2026-09-24] Handposen PRO WAFFE. Jede Stelle, die eine Handpose
+// schreibt, holt ihre Bones ueber pick(name, basis): hat die ausgeruestete
+// Waffe eine eigene Fassung dieser Pose, kommt die, sonst die Basis. Ablage
+// in re4_vr_reload.json unter "weapon_poses" (liest/schreibt RE4VRReloadMain).
+namespace wpose {
+using Bones = std::unordered_map<std::string, glm::quat>;
+
+Bones pick(const std::string& name, const Bones& base);
+
+// Menue-Zugriff (alle Aufrufe sperren intern).
+std::vector<std::string> seen(int32_t wid);                  // benutzte + eigene Namen, sortiert
+std::vector<int32_t> wids_with_own();
+bool own(int32_t wid, const std::string& name, Bones* out = nullptr);
+void set_own(int32_t wid, const std::string& name, const Bones& b);
+void drop_own(int32_t wid, const std::string& name);
+bool base(const std::string& name, Bones& out);              // zuletzt gesehene Basis
+std::vector<std::string> base_names();
+void copy_all(int32_t from, int32_t to);   // Posen + End-Einstellung
+
+// [END_POSE] Nach dem Einlegen (load_and_book) die linke Hand kurz an den
+// Vordergriff holen (Support-Dock), `hold` s halten, ueber `out` s ausblenden.
+struct EndCfg {
+    bool  on{false};
+    float hold{0.115f};
+    float out{0.20f};
+};
+EndCfg end_cfg(int32_t wid);
+void set_end_cfg(int32_t wid, const EndCfg& c);
+nlohmann::json end_to_json();
+void end_from_json(const nlohmann::json& j);
+
+// "Erzwingen": haelt eine Pose der Waffe auf der Hand (zum Einstellen).
+void set_force(int32_t wid, const std::string& name);        // leerer Name = aus
+bool force(int32_t& wid, std::string& name);
+
+nlohmann::json to_json();
+void from_json(const nlohmann::json& j);
+} // namespace wpose
+
+// [BODY-EPOCH 2026-09-22] Zaehler "Spieler-Body gewechselt" (Save-Load/Tod).
+// Nach dem Neuaufbau bleiben die alten Objekte ansprechbar (obj_ok true,
+// Getter liefern alte Werte) -- ueber Frames gemerkte Zeiger haengen dann an
+// der Leiche. Einmal je Frame wird die Adresse von fc::body_go() verglichen;
+// der Zaehler steigt, wenn sie wechselt ODER der Body zwischendurch weg war
+// und wiederkommt. Der allererste Body zaehlt NICHT (Start = 0, Module
+// starten mit m_body_epoch 0 und verwerfen beim Start nichts).
+// Modul-Muster: if (re4vr::body_epoch() != m_body_epoch) {
+//                   m_body_epoch = re4vr::body_epoch(); drop_body_caches(); }
+// Thread-sicher (atomar); die Pruefung laeuft nur einmal je Frame.
+uint64_t body_epoch();
 
 // Steht die Lua-VM gerade IN einem Aufruf? Gebraucht als nativer Ersatz fuer
 // Luas `debug.traceback`-Test in re4_vr_merc.lua: dort wird ein nativer Zug von

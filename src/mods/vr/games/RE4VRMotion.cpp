@@ -27,6 +27,7 @@
 #include "RE4VRReload.hpp"
 #include "RE4VRWeapons.hpp"
 #include "RE4VRMotion.hpp"
+#include "RE4VRReloadMain.hpp"   // [END_POSE] apply_pose_as
 
 // windows.h (ueber die Includes oben) definiert min/max als MAKROS und zerlegt
 // jedes std::min/std::max. Der Fork setzt kein NOMINMAX.
@@ -354,6 +355,21 @@ void RE4VRMotion::drop(Handle& h) {
 
     h.obj = nullptr;
     h.reffed = false;
+}
+
+// [BODY-EPOCH 2026-09-22] Nur die Zeiger loslassen (release wie in
+// on_lua_state_destroyed), KEINE Engine-Aufrufe auf den alten Objekten.
+// - Hand-Joints: find_joints holt sie per is_joint_valid(nullptr)=false neu.
+// - Body-Cache: find_player_body faellt bei go==nullptr auf den Neu-Hol-Zweig.
+// - Waffen-Cache: nur go/tf; find_weapon sieht tf==nullptr und laeuft durch
+//   seinen vorhandenen Reset (id/rel/settle/calib wie bei jedem Waffenwechsel).
+void RE4VRMotion::drop_body_caches() {
+    drop(m_right_hand.joint);
+    drop(m_left_hand.joint);
+    drop(m_body_cache.go);
+    drop(m_body_cache.transform);
+    drop(m_wep_cache.go);
+    drop(m_wep_cache.tf);
 }
 
 // ============================================================================
@@ -2388,10 +2404,42 @@ void RE4VRMotion::knife_pin_release() {
         }
     }
 
-    // Heimatparent zurueck, solange beide Seiten noch gueltig sind.
-    if (re4vr::obj_ok(m_knife_pin.tf.obj) && re4vr::obj_ok(m_knife_pin.home_parent.obj)) {
-        re4vr::call_safe<void*>(m_knife_pin.tf.obj, "set_Parent", m_knife_pin.home_parent.obj);
+    // [SACHEN-WEG 21.09.2026 -- Tester-Absturz, Stack mit Symbolen belegt]
+    // Kapitel, in dem Leon alles abgenommen wird: beim Wiederaufnehmen baut das
+    // Spiel die Waffen-GOs neu auf, der Koerper bleibt DERSELBE -> die Pruefung
+    // oben laesst durch, obj_ok ebenso, und set_Parent lief auf eine Leiche
+    // (tick -> attach_weapon -> knife_pin_release, RCX=0).
+    //
+    // Deshalb die gemerkten Zeiger NIE selbst aufrufen, sondern nur mit dem
+    // vergleichen, was das Spiel JETZT liefert: Waffen sind direkte Kinder des
+    // Body-Transforms (s. find_weapon), das gepinnte Messer bleibt das auch.
+    // Nicht mehr darunter -> es wurde abgeraeumt, nur den Zustand fallen lassen.
+    auto* btf = re4vr::fc::on() ? re4vr::fc::body_tf() : re4vr::body_transform();
+    bool knife_alive = false;
+    bool home_alive = (m_knife_pin.home_parent.obj == btf);
+
+    if (btf != nullptr) {
+        auto* child = re4vr::call_safe<::REManagedObject*>(btf, "get_Child");
+        int count = 0;
+
+        while (child != nullptr && count < 64) {
+            ++count;
+            knife_alive = knife_alive || (child == m_knife_pin.tf.obj);
+            home_alive = home_alive || (child == m_knife_pin.home_parent.obj);
+            child = re4vr::call_safe<::REManagedObject*>(child, "get_Next");
+        }
     }
+
+    if (!knife_alive) {
+        knife_pin_forget();
+
+        return;
+    }
+
+    // Heimatparent zurueck; ist er nicht mehr nachweisbar, an den lebenden
+    // Body -- dort haengen die Waffen nativ ohnehin.
+    re4vr::call_safe<void*>(m_knife_pin.tf.obj, "set_Parent",
+                            home_alive ? m_knife_pin.home_parent.obj : btf);
 
     drop(m_knife_pin.tf);
     drop(m_knife_pin.home_parent);
@@ -3362,6 +3410,17 @@ void RE4VRMotion::apply_two_hand_aim(const VrData& vr_data, const glm::vec3& cam
 
     float target = 0.0f;
 
+    // [PUMP RE9-REGEL 2026-09-25, Ansage des Users] Nur die zwei Pump-Shotguns
+    // (W-870 4100, Adas Sawed-off 6100): wie in RE9 reicht "Stuetzhand angedockt
+    // + beide Grips" -- KEINE Naehe-/Abstands-Pruefung. Nach dem Pumpen blieb
+    // gemessen der Dock mit gehaltenem Grip stehen, die Zwei-Hand-IK kam aber
+    // erst nach neuem Greifen wieder. Auch WAEHREND des Pumpens an (wie RE9):
+    // gemessen sprang der Lauf beim Ausschalten von ~30 auf 80-106 Grad zur
+    // Controller-Linie, der Handabstand schrumpfte kaum und der Pump wurde
+    // nicht erkannt. Alle anderen Waffen unveraendert.
+    const bool pump_re9 = m_wep_cache.id.has_value()
+                          && (*m_wep_cache.id == 4100 || *m_wep_cache.id == 6100);
+
     if (have_lh) {
         const glm::vec3 d = lh_raw - *m_cache.rh_world;
         const float dist = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
@@ -3374,8 +3433,10 @@ void RE4VRMotion::apply_two_hand_aim(const VrData& vr_data, const glm::vec3& cam
         // wirklich am Vordergriff ist -> Aim-Two-Hand dockt nicht mehr ueberall,
         // sondern respektiert den Dock-Dist-Slider. Vorframe-Wert; 1 Frame
         // Latenz beim Engage ist unkritisch.
-        if (lg && rg && m_support.free_near
-            && dist >= m_two_hand.min_dist && dist <= m_two_hand.max_dist) {
+        if (pump_re9) {
+            target = (lg && rg && m_support.docked) ? 1.0f : 0.0f;
+        } else if (lg && rg && m_support.free_near
+                   && dist >= m_two_hand.min_dist && dist <= m_two_hand.max_dist) {
             target = 1.0f;
         }
     }
@@ -3387,7 +3448,7 @@ void RE4VRMotion::apply_two_hand_aim(const VrData& vr_data, const glm::vec3& cam
     // rechten Hand. Halten ist unkritisch, weil der Schwenk-Ansatz nur die
     // RICHTUNG rechts->links auswertet: ein Zug ENTLANG der Laufachse aendert
     // die kaum.
-    if (rack_on) {
+    if (rack_on && !pump_re9) {
         target = m_two_hand.blend;
     }
 
@@ -3663,8 +3724,9 @@ void RE4VRMotion::attach_right_hand(const glm::vec3& cam_pos, const glm::quat& c
         const auto pull = re4vr::lua_get_vec3("__re4_grip_pull");
         const bool pumping = re4vr::lua_get_tribool("__vr_shotgun_pump_active") == 1
                              || re4vr::lua_get_tribool("__vr_slide_rack_active") == 1;
+        // [Z_CLAMP 6100 2026-09-24] Adas Sawed-off bekommt dieselbe Ruecknahme.
         const bool want = pull.has_value() && m_wep_cache.id.has_value()
-                          && *m_wep_cache.id == 4100 && !pumping;
+                          && (*m_wep_cache.id == 4100 || *m_wep_cache.id == 6100) && !pumping;
 
         const bool has_give = m_support.give.has_value()
                               && (std::fabs(m_support.give->x) > 1e-5f
@@ -4461,6 +4523,76 @@ bool RE4VRMotion::get_support_pose(glm::vec3& out_pos, glm::quat& out_rot) {
     out_pos = rh_world + (rh_rot * glm::vec3{pos_x, pos_y, pos_z});
     out_rot = rh_rot;
 
+    // [Z_CLAMP 6100 2026-09-24] Adas Sawed-off hat keinen Pump-Joint-Anker (ihr
+    // Griff kommt ueber pos_x/y/z hier aus dem Normalpfad), steht aber wie
+    // wp4100 in is_grip_locked_shotgun -> die Hand klebt am Griff, und ohne
+    // Ruecknahme stretchte der Unterarm gemessen auf 311 % (Griff 1,14 m von
+    // der Schulter, Reichweite 0,657 m). Deshalb hier dieselbe Rechnung wie
+    // der wp4100-Z-Clamp im Pump-Zweig: die WAFFE entlang ihrer Laengsachse
+    // zurueckhalten, bis der Griff auf der Reichweitenkugel liegt.
+    if (m_wep_cache.id.has_value() && *m_wep_cache.id == 6100) {
+        bool pub = false;
+
+        // [GATE DOCK STATT TWO_HAND 2026-09-24] Erster Build war auf
+        // m_two_hand.active gegatet -> gemessen pull=nil in allen 28 gedockten
+        // Zeilen. Bei 6100 haelt der GRIFF-LOCK den Dock, two_hand.active steht
+        // dabei nicht (free_near faellt weg, der Controller ist 17-45 cm vom
+        // Griffpunkt). Also auf den gehaltenen Dock gaten.
+        if (m_two_hand.active || (m_support.docked && m_support.blend_factor > 0.001f)) {
+            const auto lr = re4vr::lua_get_vec3("__vr_arm_chain_L_root");
+            auto lm = re4vr::lua_get_number_opt("__vr_arm_chain_L_maxreach");
+
+            glm::quat wq = rh_rot;
+
+            if (m_wep_cache.rel_rot.has_value()) {
+                wq = glm::normalize(rh_rot * (*m_wep_cache.rel_rot));
+            }
+
+            const glm::vec3 ax = wq * glm::vec3{0.0f, 0.0f, 1.0f};
+
+            if (lm.has_value()) {
+                lm = *lm - 0.015;   // [IK_RESERVE] wie wp4100
+            }
+
+            if (lr.has_value() && lm.has_value() && *lm > 0.05) {
+                const float al = std::sqrt(ax.x * ax.x + ax.y * ax.y + ax.z * ax.z);
+
+                if (al > 1e-6f) {
+                    const glm::vec3 n = ax / al;
+                    // [SCHLEIFE GEBROCHEN] Lage OHNE die eigene Korrektur messen:
+                    // rh_world traegt die Ruecknahme schon in sich.
+                    const glm::vec3 sg = m_support.give.value_or(glm::vec3{0.0f, 0.0f, 0.0f});
+                    const glm::vec3 m = out_pos - sg;
+                    const glm::vec3 e = m - *lr;
+                    const float ee = e.x * e.x + e.y * e.y + e.z * e.z;
+                    const float lmf = static_cast<float>(*lm);
+
+                    if (ee > lmf * lmf) {
+                        const float ea = e.x * n.x + e.y * n.y + e.z * n.z;
+                        const float disc = ea * ea - ee + lmf * lmf;
+
+                        if (disc >= 0.0f) {
+                            float t = ea - std::sqrt(disc);
+
+                            if (t > 0.0f) {
+                                if (t > 0.5f) {
+                                    t = 0.5f;   // Sicherheitsdeckel
+                                }
+
+                                re4vr::lua_set_vec3("__re4_grip_pull", glm::vec3{-n.x * t, -n.y * t, -n.z * t});
+                                pub = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!pub) {
+            re4vr::lua_set_nil("__re4_grip_pull");
+        }
+    }
+
     if (pitch != 0.0f || yaw != 0.0f || roll != 0.0f) {
         out_rot = glm::normalize(rh_rot * quat_from_euler_deg(pitch, yaw, roll));
     }
@@ -4496,6 +4628,8 @@ void RE4VRMotion::play_le5_switch_sound() {
 // die Nil-Pruefung sitzt im Original erst in `allowed`, also NACH Aim-Ramp,
 // Switch2-Ramp, dem Loeschen von switch_blend_lock und dem SLIDE_RACK-Block.
 void RE4VRMotion::update_support_dock(const glm::vec3& free_pos, const glm::vec3* support_pos) {
+    m_support.end_active = false;   // [END_POSE] jeden LockScene neu entschieden
+
     // [HARTER BREAK 10.09.2026] Loslassen und Wegziehen sind ein BRUCH, kein
     // Ausblenden: blend_factor sofort auf 0, damit die Hand im selben Frame auf
     // der Controller-Pose sitzt. Das weiche ramp_out darunter bleibt fuer alle
@@ -4707,6 +4841,48 @@ void RE4VRMotion::update_support_dock(const glm::vec3& free_pos, const glm::vec3
         // 0,15 s von selbst aus. Gelesen in RE4VRChoke.cpp.
         if (m_support.free_near) {
             re4vr::lua_set_number("__re4_lh_support_near_t", clock_now());
+        }
+    }
+
+    // [END_POSE 2026-09-24] Nach dem Einlegen (load_and_book setzt
+    // __re4_end_pose_t/_wid) holt der vorhandene Support-Dock die linke Hand
+    // an den Vordergriff: `hold` s halten, dann ueber `out` s ausblenden. Nur
+    // wenn fuer die Waffe eingeschaltet (Handposen-Baum). Vorrang vor dem
+    // MAG-DOCK-LOCK darunter -- der sperrt sonst 1.2 s nach dem Insert.
+    if (m_wep_cache.id.has_value()) {
+        const int32_t wid = *m_wep_cache.id;
+        const auto ec = re4vr::wpose::end_cfg(wid);
+        const double et = re4vr::lua_get_number("__re4_end_pose_t", 0.0);
+        const double ew = re4vr::lua_get_number("__re4_end_pose_wid", -1.0);
+
+        if (ec.on && et > 0.0 && static_cast<int32_t>(ew) == wid) {
+            const double age = clock_now() - et;
+
+            if (age >= 0.0 && age < ec.hold) {
+                m_support.end_active = true;
+                m_support.docked = true;
+                m_support.target_blend = 1.0f;
+                m_support.dock_wid = m_wep_cache.id;
+                m_support.blend_factor = std::min(m_support.blend_factor + 0.15f, 1.0f);
+                return;   // (E1) halten
+            }
+
+            if (age >= 0.0 && age < ec.hold + ec.out) {
+                // Greift der Spieler selbst am Vordergriff zu, uebernimmt der
+                // normale Dock -- sonst weich ausblenden statt hartem Bruch.
+                const bool takes_over = m_support.free_near
+                                        && (!is_grip_dock_weapon(wid) || is_left_grip_held());
+
+                if (!takes_over) {
+                    const float t = static_cast<float>((age - ec.hold) / std::max(ec.out, 0.001f));
+                    const float s = t * t * (3.0f - 2.0f * t);
+                    m_support.end_active = true;
+                    m_support.docked = false;
+                    m_support.target_blend = 0.0f;
+                    m_support.blend_factor = std::min(m_support.blend_factor, 1.0f - s);
+                    return;   // (E2) ausblenden
+                }
+            }
         }
     }
 
@@ -5086,7 +5262,9 @@ void RE4VRMotion::attach_left_hand(const glm::vec3& cam_pos, const glm::quat& ca
         // regeln ZWEI Regler dieselbe Groesse an derselben Grenze -- beim Laufen
         // wandert die Schulter, die Reichweitenkugel wandert mit, und beide
         // schaukeln sich auf = Zittern des ganzen Arms.
-        if (!(m_wep_cache.id.has_value() && *m_wep_cache.id == 4100)) {
+        // [Z_CLAMP 6100 2026-09-24] Adas Sawed-off hat jetzt denselben Z-Clamp.
+        if (!(m_wep_cache.id.has_value()
+              && (*m_wep_cache.id == 4100 || *m_wep_cache.id == 6100))) {
             hand_pos = clamp_hand_to_arm_reach(hand_pos, "L");
         }
     }
@@ -6666,6 +6844,12 @@ void RE4VRMotion::apply_pistol_support_pose() {
         return;   // nur waehrend und solange gedockt
     }
 
+    // [KFH 2026-09-24] Keyframe-Handpose laeuft (ReloadAdv) -> deren Finger
+    // gelten. Gemessen bei der Red9: pose1 lag sonst im letzten Pass drueber.
+    if (re4vr::lua_get_tribool("__re4_kfh_active") == 1) {
+        return;
+    }
+
     const int32_t wid = *m_wep_cache.id;
     const char* pose = nullptr;
 
@@ -6683,6 +6867,16 @@ void RE4VRMotion::apply_pistol_support_pose() {
         break;
     default:
         break;
+    }
+
+    // [END_POSE] Waehrend der End-Pose eigene Finger "(end)" -- Basis ist die
+    // Support-Pose der Waffe, bei Zweihand-Waffen ohne Override "pose1".
+    if (m_support.end_active) {
+        if (auto* rm = RE4VRReloadMain::instance(); rm != nullptr) {
+            rm->apply_pose_as("(end)", pose != nullptr ? pose : "pose1", m_support.blend_factor);
+        }
+
+        return;
     }
 
     if (pose == nullptr) {
@@ -7173,6 +7367,12 @@ void RE4VRMotion::fl_save_cfg() {
 // ============================================================================
 
 void RE4VRMotion::tick(bool do_weapon_sample) {
+    // [BODY-EPOCH 2026-09-22] Body gewechselt -> gemerkte Zeiger verwerfen.
+    if (const auto ep = re4vr::body_epoch(); ep != m_body_epoch) {
+        m_body_epoch = ep;
+        drop_body_caches();
+    }
+
     // [ELEVATOR] jeden Frame vom Aufzug loesen -- VOR allen Ausstiegen.
     elevator_unparent();
 

@@ -430,6 +430,7 @@ private:
         std::string parts_sig{};
         std::string mode{"strip"};
         bool parented{false};
+        std::string pmode{};   // "hand" oder "weapon" (wie RE4VRReload2)
     } m_r9clip{};
 
     struct Red9State {
@@ -517,6 +518,9 @@ private:
     void update_slide_rack();
     void r9_set_tf(::REManagedObject* tf, const glm::vec3& p,
                    const std::optional<glm::quat>& rot, float s);
+    // [BAHN KLEBT AN DER WAFFE] Umhaengen zwischen L_Hand und Waffe,
+    // 1:1 wie RE4VRReload2::r9_clip_parent_mode.
+    void r9_clip_parent_mode(const char* mode);
     void r9_follow_to_hand();
     std::optional<glm::vec3> r9_dockport_world();
     static std::optional<int32_t> r9_equip_type_main();
@@ -639,6 +643,13 @@ private:
     // ---- Save-Load-Reset (Body-Adresse springt) -----------------------
     std::optional<uintptr_t> m_sl_body{};
     void tick_saveload_reset();
+
+    // ---- [BODY-EPOCH 2026-09-22] re4vr::body_epoch() ------------------
+    // Ergaenzt den Save-Load-Reset: faengt auch "Body weg, gleiche Adresse
+    // kommt wieder" und die Waffen-Zeiger, die der Reset oben nicht leert.
+    uint64_t m_body_epoch{0};
+    void tick_body_epoch();
+    void drop_body_caches();
 
     // ---- Fuer die Hooks gespiegelte Lua-Globals -----------------------
     // isEnableFire und SoundContainer.trigger feuern sehr oft; ein Lua-Zugriff

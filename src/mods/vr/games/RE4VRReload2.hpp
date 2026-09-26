@@ -949,6 +949,13 @@ private:
     std::optional<uintptr_t> m_sl_body{};
     void tick_saveload_reset();
 
+    // ---- [BODY-EPOCH 2026-09-22] re4vr::body_epoch() ------------------
+    // Ergaenzt den Save-Load-Reset: faengt auch "Body weg, gleiche Adresse
+    // kommt wieder" und die Waffen-Zeiger, die der Reset oben nicht leert.
+    uint64_t m_body_epoch{0};
+    void tick_body_epoch();
+    void drop_body_caches();
+
     // ---- Fuer die Hooks gespiegelte Lua-Globals -----------------------
     // isEnableFire und SoundContainer.trigger feuern sehr oft; ein Lua-Zugriff
     // pro Aufruf waere dutzendfaches Sperren des sol-States.

@@ -157,6 +157,12 @@ private:
     void clear_joint_cache();                      // der ECHTE Flush (Lua Z.1088/1096)
     void flush_all_arm_caches();   // Lua Z.423: trifft den Cache NICHT (Spec 15.2)
 
+    // [BODY-EPOCH 2026-09-22] Body gewechselt (Save-Load/Tod) -> m_chain_joints
+    // loslassen (clear_joint_cache: nur release, keine Engine-Aufrufe);
+    // get_chain_joint holt bei nullptr neu.
+    uint64_t m_body_epoch{0};
+    void drop_body_caches() { clear_joint_cache(); }
+
     void apply_ik_rotation_to_joint(int bone, const glm::quat& world_rot, ::REJoint* joint);
     void apply_shoulder_pin(Side side);
     void apply_arm_ik_side(Side side, glm::vec3 hand_pos, const glm::quat* char_rot,

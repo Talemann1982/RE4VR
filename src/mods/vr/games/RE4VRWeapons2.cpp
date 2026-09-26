@@ -2726,6 +2726,13 @@ void RE4VRWeapons2::capture_cb(::REManagedObject* attacker_hc, ::REManagedObject
 // Bewusst KEIN release auf das gepoolte Objekt: nach dem Load kann es tot sein,
 // ein release darauf waere genau der Deref, den wir vermeiden wollen.
 // Loslassen genuegt, die Engine besitzt es ohnehin.
+// [BODY-EPOCH 2026-09-22] Nur eigenen Zustand verwerfen: der Sound-Container
+// des linken Messers gehoert zur alten Szene. drop() gibt nur die eigene
+// add_ref-Referenz frei, keine Engine-Aufrufe auf dem alten Objekt.
+void RE4VRWeapons2::drop_body_caches() {
+    drop(m_lh_snd_last);
+}
+
 void RE4VRWeapons2::knife_drop_caches(const char* grund) {
     // Nur den Zeiger loslassen -- NICHT release() rufen.
     m_dmginfo.obj = nullptr;
@@ -4104,8 +4111,24 @@ void RE4VRWeapons2::parry_keep_gun_tick() {
     // warten. Stabil = fruehester Zeitpunkt erreicht UND Messer nicht mehr
     // equippt UND nichts in der Hand. Das Timeout bleibt als Notbremse.
     const double kf = re4vr::lua_get_number("__re4_parry_keep_gun_from", 0.0);
+
+    // [PARRY_HEAL 2026-09-24 -- Tester-Sonde re4_ammo_tester_sonde (1).txt]
+    // Seit dem Equip-Riegel (RE4VRWeapons::cb_equip_weapon, 13.09.) bleibt die
+    // Schusswaffe beim Parry IN der Hand (get_EquipWeaponID = 4000), das
+    // Inventar fuehrt aber das Messer (Accessor-Item 5000). Folge: HUD 0,
+    // Nachladen bucht falsch, bis weggesteckt wird. Diese Lage heisst hier
+    // "mismatch" und wird wie "nichts in der Hand" behandelt.
+    const auto acc_wid = [&]() -> int32_t {
+        auto* pe = re4vr::fc::pe();
+        auto* acc = (pe != nullptr)
+            ? re4vr::call_safe<::REManagedObject*>(pe, "getEquipWeaponAccessor") : nullptr;
+        auto* it = (acc != nullptr) ? re4vr::call_safe<::REManagedObject*>(acc, "get_Item") : nullptr;
+        return (it != nullptr) ? enum_as_int(it, "get_WeaponId").value_or(-1) : -1;
+    };
+    const bool mismatch = wn > 0 && !is_knife_id(wn) && is_knife_id(acc_wid());
+
     const bool stable = now >= kf
-        && re4vr::lua_get_tribool("__re4_knife_equipped") != 1 && wn <= 0;
+        && re4vr::lua_get_tribool("__re4_knife_equipped") != 1 && (wn <= 0 || mismatch);
 
     if (!stable && now < *ku) {
         return;
@@ -4119,11 +4142,11 @@ void RE4VRWeapons2::parry_keep_gun_tick() {
         return;
     }
 
-    if (wn > 0) {
-        return;   // es haelt schon wieder etwas -> Finger weg
+    if (wn > 0 && !mismatch) {
+        return;   // es haelt schon wieder etwas (und das Inventar stimmt) -> Finger weg
     }
 
-    if (!re4vr::lua_get_number_opt("__re4_parry_last_gun_wid").has_value()) {
+    if (!mismatch && !re4vr::lua_get_number_opt("__re4_parry_last_gun_wid").has_value()) {
         return;
     }
 
@@ -4133,6 +4156,9 @@ void RE4VRWeapons2::parry_keep_gun_tick() {
         return;
     }
 
+    // [PARRY_HEAL] Eigener Wechsel -> am Equip-Riegel vorbei (sonst blockt er
+    // genau diesen Rueckholversuch, wie jeden Wechsel des Spiels).
+    re4vr::lua_set_number("__re4_our_equip_until", now + 0.5);
     re4vr::call_safe<void*>(eq, "requestEquipGun");
 }
 
@@ -5721,6 +5747,14 @@ void RE4VRWeapons2::on_frame() {
 
     if (!ensure_init()) {
         return;
+    }
+
+    // [BODY-EPOCH 2026-09-22] Body gewechselt (Save-Load/Tod): gemerkte Zeiger
+    // an der Leiche verwerfen. knife_di_guard (DamageInfo, Links-Klon) bleibt
+    // unveraendert und macht seinen Teil weiter selbst.
+    if (const auto ep = re4vr::body_epoch(); ep != m_body_epoch) {
+        m_body_epoch = ep;
+        drop_body_caches();
     }
 
     // Reihenfolge = Registrierungsreihenfolge der on_frame in der Lua.

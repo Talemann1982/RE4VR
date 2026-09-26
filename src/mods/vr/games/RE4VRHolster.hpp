@@ -218,6 +218,9 @@ private:
     void tick_slot(Slot& s);
     void apply_all();
 
+    // [BODY-EPOCH 2026-09-22] Gemerkte Body-Zeiger verwerfen (s. re4vr::body_epoch).
+    void drop_body_caches();
+
     // ---- Mag-Holster ---------------------------------------------------
     ::REJoint* mag_joint();
     bool mag_anchor(glm::vec3& out);
@@ -290,6 +293,9 @@ private:
     // sie (Tod/Laden in der Kampagne), wird der Waffen-Snapshot geloescht --
     // dasselbe wie MERCS-LEVELSTART.
     std::optional<uintptr_t> m_sl_body_addr{};
+
+    // [BODY-EPOCH 2026-09-22] Zuletzt gesehener re4vr::body_epoch().
+    uint64_t m_body_epoch{0};
 
     // Grab-Dispatch (Lua Z.1674-1704)
     bool m_grip_prev{false};

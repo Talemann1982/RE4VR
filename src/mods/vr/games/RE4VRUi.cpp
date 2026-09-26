@@ -22,6 +22,7 @@
 #include "../../VR.hpp"
 
 #include "RE4VRUi.hpp"
+#include "RE4VRCrosshair.hpp"   // [DOT_CROSSHAIR]
 
 #undef min
 #undef max
@@ -1085,6 +1086,14 @@ bool RE4VRUi::on_pre_gui_draw_element(::REComponent* element, void* context) {
 
     if (name.empty()) {
         return true;
+    }
+
+    // [DOT_CROSSHAIR 26.09.2026] Ist der Mittel-Dot das Fadenkreuz, gilt fuer ihn dasselbe wie fuer
+    // das native Reticle: "Mittel-Dot ausblenden" greift nicht, mit montiertem Scope ist er weg.
+    if (name == "Gui_ui2041") {
+        if (auto& ch = RE4VRCrosshair::get(); ch != nullptr && ch->dot_crosshair()) {
+            return !scopehide_attached();
+        }
     }
 
     // [MITTEL-DOT 2026-08-10] Diese Namen gelten im GANZEN Spiel -- deshalb
