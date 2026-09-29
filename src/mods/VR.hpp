@@ -4,6 +4,8 @@
 #include <bitset>
 #include <memory>
 #include <mutex>
+#include <atomic>   // [UI_TRENNUNG 28.09.2026]
+#include <string>
 #include <unordered_map>
 #include <shared_mutex>
 
@@ -50,6 +52,44 @@ public:
     };
 
     std::array<EyeState, 2> m_eye_states{};
+
+    // [UI_TRENNUNG 28.09.2026 -- Ansage des Users] Das VR-UI wird im Multipass
+    // pro Auge zwischen "vor Overlay" und "vor PrepareOutput" ins PostMainTarget
+    // gezeichnet (Schwarz-Test Stellen 3/4 belegt). Zwei Kopien pro Auge:
+    // hudless = vor Overlay (ohne UI), final = vor PrepareOutput (mit UI).
+    // Der Unterschied ist das UI -> D3D12Component nimmt es aus Nachbearbeitung
+    // und Upscaler heraus. Engine-Texturen stehen fuer D3D12 in COMMON.
+    struct UiCapture {
+        sdk::intrusive_ptr<sdk::renderer::Texture> hudless{};
+        sdk::intrusive_ptr<sdk::renderer::Texture> final_tex{};
+        uint32_t width{0};
+        uint32_t height{0};
+        std::atomic<bool> hudless_ok{false};
+        std::atomic<bool> final_ok{false};
+        // [PAARE 28.09.2026] Nur Kopien AUS DEMSELBEN Frame passen zusammen --
+        // gemischte Frames = Ghosting in bewegten Bereichen (Vegetation).
+        std::atomic<uint64_t> hudless_frame{0};
+        std::atomic<uint64_t> final_frame{0};
+        std::atomic<uint64_t> used_frame{0};
+        std::atomic<void*> scene_layer{nullptr};   // [UI_FARBE] passende Upscaler-Farbkopie finden
+    };
+    // [UI_REIHENFOLGE 28.09.2026] Sonde: Reihenfolge der Kopien im Frame, z. B. "H0H1F0F1"
+    std::mutex m_ui_order_mtx{};
+    std::string m_ui_order{};
+    std::string m_ui_order_last{};
+    // Sonde, PRO AUGE: Paar passte / Frames verschieden / Paar schon benutzt,
+    // dazu wie oft jede Kopie geschrieben wurde (hudless/final).
+    std::array<std::atomic<uint32_t>, 2> m_ui_pair_ok{};
+    std::array<std::atomic<uint32_t>, 2> m_ui_pair_bad{};
+    std::array<std::atomic<uint32_t>, 2> m_ui_pair_old{};
+    std::array<std::atomic<uint32_t>, 2> m_ui_cap_hud{};
+    std::array<std::atomic<uint32_t>, 2> m_ui_cap_fin{};
+    std::array<UiCapture, 2> m_ui_capture{};
+    // [UI_MASKE_ROT 28.09.2026] Sichttest: erkannte UI-Pixel rot einfaerben
+    // (Lua-Global __re4_uitest_clear == 6, auf dem Hauptthread uebernommen).
+    std::atomic<bool> m_ui_debug_mask{false};
+    void ui_capture(void* render_context, sdk::renderer::RenderLayer* scene_layer, bool final_pass);
+    ID3D12Resource* ui_capture_resource(int eye, bool final_pass);
     
     int m_camera_data_update_frame_count{};
     void update_camera_data();
@@ -176,6 +216,31 @@ public:
     RenderingTechnique get_rendering_technique() const {
         return (RenderingTechnique)m_rendering_technique->value();
     }
+
+    // [CUT2D_MULTIPASS 29.09.2026 -- Ansage des Users] Waehrend der 2D-Cutscene-Leinwand
+    // auf Single Frame Multipass, danach zurueck auf die vorherige Technik. Die vorherige
+    // Technik bleibt die gespeicherte (on_config_save schreibt sie statt Multipass).
+    // Hat der User in der Cutscene selbst umgeschaltet, bleibt seine Wahl stehen.
+    void set_cutscene_multipass(bool on) {
+        int32_t& value = m_rendering_technique->value();
+
+        // Two Frame Sequential bleibt, wie es ist: der Wechsel Sequential <-> Multipass
+        // macht Aerger (User 29.09.), AFW <-> Sequential nicht.
+        if (on) {
+            if (!m_cut2d_mp_saved.has_value() && value != MULTIPASS && value != SEQUENTIAL_FRAME) {
+                m_cut2d_mp_saved = value;
+                value = MULTIPASS;
+            }
+        } else if (m_cut2d_mp_saved.has_value()) {
+            if (value == MULTIPASS) {
+                value = *m_cut2d_mp_saved;
+            }
+
+            m_cut2d_mp_saved.reset();
+        }
+    }
+
+    std::optional<int32_t> m_cut2d_mp_saved{};
 
     // Functions that generally use a mutex or have more complex logic
     float get_standing_height();
@@ -449,6 +514,25 @@ public:
         if (distance < 0.2f) { distance = 0.2f; }
         if (distance > 10.0f) { distance = 10.0f; }
         m_map_glue_distance = distance;
+    }
+
+    // --- [GOLD-FX 29.09.2026] Gold-Partikel-Spuren im Inlay-Menue -------------
+    // Blendet in VR via.gui.Effect2D/Effect2DTexture mit Target 4 aus (zeichnen in
+    // das ganze Bild, das in VR nie geleert wird -> bleibende Schlieren). Details
+    // bei gold_fx in VR.cpp. Gesteuert von RE4VRUi (Option, Standard an).
+    // --- [MAP-ASPECT 29.09.2026] Karten-Umriss in VR seitlich gestreckt -----------
+    // Die GUICamera der Karte (Gui_ui3120) baut ihre Ortho-Projektion aus der View-
+    // Groesse = Augengroesse (Seitenverhaeltnis ~0.95 statt 16:9) -> Umriss pannt
+    // schneller als die Icons. Solange die Karte offen ist, wird die x-Spalte der
+    // GUI-Kamera-Projektion auf 16:9 zurueckgerechnet. Gesteuert von RE4VRUi.
+    void set_map_aspect(bool active, bool fix) {
+        m_map_aspect_active = active;
+        m_map_aspect_fix = fix;
+    }
+    static void map_aspect_apply(Matrix4x4f& m);
+
+    void set_hide_feedback_fx(bool hide) {
+        m_hide_feedback_fx = hide;
     }
 
     // True while the engine must be left alone (canvas mode or suspend). Deliberately
@@ -739,6 +823,8 @@ public:
     auto get_action_dpad_down() const { return m_action_dpad_down; }
     auto get_action_dpad_left() const { return m_action_dpad_left; }
     auto get_action_dpad_right() const { return m_action_dpad_right; }
+    auto get_action_frame_left_a() const { return m_action_frame_left_a; }   // [STEAM_FRAME]
+    auto get_action_frame_left_b() const { return m_action_frame_left_b; }   // [STEAM_FRAME]
     auto get_action_heal() const { return m_action_heal; }
     auto get_action_touchpad_click() const { return m_action_touchpad_click; }
     auto get_action_touchpad() const { return m_action_touchpad; }
@@ -816,6 +902,7 @@ private:
     bool on_pre_scene_layer_draw(sdk::renderer::layer::Scene* layer, void* render_context) override;
 
     void on_prepare_output_layer_draw(sdk::renderer::layer::PrepareOutput* layer, void* render_context) override;
+    bool on_pre_prepare_output_layer_draw(sdk::renderer::layer::PrepareOutput* layer, void* render_context) override;   // [UI_TEST 28.09.2026]
 
     struct SceneLayerData {
         SceneLayerData() = default;
@@ -981,6 +1068,10 @@ private:
     vr::VRActionHandle_t m_action_dpad_right{};
     vr::VRActionHandle_t m_action_dpad_down{};
     vr::VRActionHandle_t m_action_dpad_left{};
+    // [STEAM_FRAME 2026-09-28] Frame rechts B/Y = bisheriges linkes A/B.
+    // Nur im Frame-Profil gebunden, sonst immer aus.
+    vr::VRActionHandle_t m_action_frame_left_a{};
+    vr::VRActionHandle_t m_action_frame_left_b{};
     vr::VRActionHandle_t m_action_system_button{};
     vr::VRActionHandle_t m_action_weapon_dial{};
     vr::VRActionHandle_t m_action_re3_dodge{};
@@ -1022,6 +1113,8 @@ private:
         { "/actions/default/in/DPad_Right", m_action_dpad_right },
         { "/actions/default/in/DPad_Down", m_action_dpad_down },
         { "/actions/default/in/DPad_Left", m_action_dpad_left },
+        { "/actions/default/in/Frame_LeftA", m_action_frame_left_a },
+        { "/actions/default/in/Frame_LeftB", m_action_frame_left_b },
         { "/actions/default/in/SystemButton", m_action_system_button },
         { "/actions/default/in/WeaponDial_Start", m_action_weapon_dial },
         { "/actions/default/in/RE3_Dodge", m_action_re3_dodge },
@@ -1124,6 +1217,7 @@ private:
     static std::string binding_vive;
     static std::string bindings_vive_controller;
     static std::string bindings_knuckles;
+    static std::string bindings_frame_controller;   // [STEAM_FRAME 2026-09-28]
 
     const std::unordered_map<std::string, std::string> m_binding_files {
         { "actions.json", actions_json },
@@ -1131,7 +1225,8 @@ private:
         { "bindings_oculus_touch.json", bindings_oculus_touch_json },
         { "binding_vive.json", binding_vive },
         { "bindings_vive_controller.json", bindings_vive_controller },
-        { "bindings_knuckles.json", bindings_knuckles }
+        { "bindings_knuckles.json", bindings_knuckles },
+        { "bindings_frame.json", bindings_frame_controller }   // [STEAM_FRAME]
     };
 
     const ModKey::Ptr m_set_standing_key{ ModKey::create(generate_name("SetStandingOriginKey")) };
@@ -1268,6 +1363,9 @@ private:
     bool m_map_face_glue{false};               // RE4 map layers head-locked, see is_map_face_glue()
     float m_map_glue_distance{1.5f};           // meters in front of the head while glued
     float m_map_glue_layer_gap{0.002f};        // per-layer stagger, see get_map_glue_layer_gap()
+    std::atomic<bool> m_hide_feedback_fx{true}; // [GOLD-FX] s. set_hide_feedback_fx()
+    std::atomic<bool> m_map_aspect_active{false}; // [MAP-ASPECT] Karte offen
+    std::atomic<bool> m_map_aspect_fix{true};     // [MAP-ASPECT] Option an
     // Liste der gepinnten GUIs, siehe is_glue_gui(). Wird beim ersten Zugriff mit den
     // Karten-GUIs vorbelegt; ein bewusstes clear_glue_guis() bleibt leer.
     std::unordered_map<uint32_t, int> m_glue_guis{};

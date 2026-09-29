@@ -9,6 +9,7 @@
 
 #include <sdk/Renderer.hpp>
 #include <sdk/SceneManager.hpp>
+#include <sdk/SystemArray.hpp>
 #include <sdk/Memory.hpp>
 
 #if TDB_VER <= 49
@@ -222,25 +223,9 @@ void TemporalUpscaler::draw_settings() {
         g_framework->pop_menu_toggle_style();
 
         if (ready()) {
-            //if (ImGui::Checkbox("Sharpness", &m_sharpness)) {
-            g_framework->push_menu_toggle_style();
-            const bool sharpness_changed = m_sharpness->draw("Sharpness");
-            g_framework->pop_menu_toggle_style();
-
-            if (sharpness_changed) {
-                release_upscale_features();
-                init_upscale_features();
-            }
-
-            //ImGui::DragFloat("Sharpness Amount", &m_sharpness_amount, 0.01f, 0.0f, 5.0f);
-            // Ganze Schritte 0..10 -- kein Nachkomma, wie angesagt.
-            {
-                int amount = m_sharpness_amount->value();
-
-                if (ImGui::SliderInt("Sharpness Amount", &amount, 0, 10)) {
-                    m_sharpness_amount->value() = std::clamp(amount, 0, 10);
-                }
-            }
+            // [CAS RAUS 28.09.2026 -- Ansage des Users] "Sharpness"-Toggle und
+            // "Sharpness Amount" sind weg. Geschaerft wird nur noch ueber die
+            // allgemeine Sharpness oben (PostPass, gilt mit und ohne Upscaler).
 
             std::vector<const char*> imgui_combo_names{};
 
@@ -296,6 +281,176 @@ void TemporalUpscaler::draw_settings() {
     // jetzt die Ueberschrift "Rendering Technique" selbst
     // (REFramework::draw_menu_heading mit gap_before) -- wie alle Ueberschriften.
     VR::get()->draw_rendering_technique_ui();
+
+    // [POST_PROCESSING 28.09.2026 -- Ansage des Users] Unter "Two Frame
+    // Sequential": Trennstrich + Ueberschrift (Resi-Schrift, erster Buchstabe
+    // rot) wie alle Ueberschriften, darunter die beiden Toggles.
+    g_framework->draw_menu_heading("POST PROCESSING", true);
+
+    g_framework->push_menu_toggle_style();
+    const bool fog_changed = m_fog_enabled->draw("Enable Fog");
+    const bool volfog_changed = m_volfog_enabled->draw("Enable VolumetricFog");
+    const bool colorcorrect_changed = m_colorcorrect_enabled->draw("Enable Color Correction");
+    g_framework->pop_menu_toggle_style();
+
+    if (fog_changed) {
+        m_fog_restore = m_fog_enabled->value();
+        g_framework->request_save_config();
+    }
+
+    if (volfog_changed) {
+        m_volfog_restore = m_volfog_enabled->value();
+        g_framework->request_save_config();
+    }
+
+    if (colorcorrect_changed) {
+        m_colorcorrect_restore = m_colorcorrect_enabled->value();
+        g_framework->request_save_config();
+    }
+
+    // [POST_PASS 28.09.2026] SMAA auf den Augenbildern -- nur ohne Upscaler.
+    // Sharpness/Saturation stehen ganz oben (draw_post_sliders).
+    {
+        // [SMAA NUR OHNE UPSCALER 28.09.2026 -- Ansage des Users] Laeuft der
+        // Upscaler, wird SMAA ausgeschaltet und ausgegraut -- der glaettet selbst.
+        const bool upscaling = ready();
+
+        if (upscaling && m_post_smaa->value()) {
+            m_post_smaa->value() = false;
+            g_framework->request_save_config();
+        }
+
+        if (upscaling) {
+            ImGui::BeginDisabled();
+        }
+
+        g_framework->push_menu_toggle_style();
+        const bool smaa_changed = m_post_smaa->draw("Enable SMAA");
+        g_framework->pop_menu_toggle_style();
+
+        if (upscaling) {
+            ImGui::EndDisabled();
+
+            // [ROT 28.09.2026 -- Ansage des Users] Nur der Klammer-Hinweis rot,
+            // NACH EndDisabled, damit er nicht mit ausgegraut wird.
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4{1.0f, 0.0f, 0.0f, 1.0f}, "(Upscaler running)");
+        }
+
+        if (smaa_changed && !upscaling) {
+            g_framework->request_save_config();
+        }
+    }
+}
+
+// [ALLGEMEINE REGLER 28.09.2026 -- Ansage des Users] Sharpness + Saturation
+// gelten in JEDEM Zustand (mit/ohne Upscaler) und stehen deshalb ganz oben in
+// der Kategorie, direkt unter "OpenXR Resolution Scale" (REFramework.cpp).
+void TemporalUpscaler::draw_post_sliders() {
+    // [ABSTAND 28.09.2026 -- Ansage des Users] Etwas mehr Luft zur Resolution-Zeile.
+    ImGui::Dummy(ImVec2(0.0f, ImGui::GetTextLineHeight() * 0.75f));
+
+    // [BRIGHTNESS/CONTRAST 28.09.2026 -- Ansage des Users] eigene Shader (PostPass),
+    // NICHT Engine-Gamma. Reihenfolge: Brightness, Contrast, Sharpness, Saturation.
+    int bright = m_post_brightness->value();
+
+    if (ImGui::SliderInt("Brightness##post", &bright, -10, 10)) {
+        m_post_brightness->value() = std::clamp(bright, -10, 10);
+        g_framework->request_save_config();
+    }
+
+    int contrast = m_post_contrast->value();
+
+    if (ImGui::SliderInt("Contrast##post", &contrast, -10, 10)) {
+        m_post_contrast->value() = std::clamp(contrast, -10, 10);
+        g_framework->request_save_config();
+    }
+
+    int sharp = m_post_sharpness->value();
+
+    if (ImGui::SliderInt("Sharpness##post", &sharp, 0, 10)) {
+        m_post_sharpness->value() = std::clamp(sharp, 0, 10);
+        g_framework->request_save_config();
+    }
+
+    int sat = m_post_saturation->value();
+
+    if (ImGui::SliderInt("Saturation##post", &sat, -10, 10)) {
+        m_post_saturation->value() = std::clamp(sat, -10, 10);
+        g_framework->request_save_config();
+    }
+
+    // [RESET 28.09.2026 -- Ansage des Users] Ein Knopf unter beiden Reglern:
+    // alle vier auf 0 (= aus/neutral). Stil wie der Set-Knopf.
+    g_framework->push_menu_toggle_style();
+    const bool reset_clicked = ImGui::SmallButton("Reset##post");
+    g_framework->pop_menu_toggle_style();
+
+    if (reset_clicked) {
+        m_post_brightness->value() = 0;
+        m_post_contrast->value() = 0;
+        m_post_sharpness->value() = 0;
+        m_post_saturation->value() = 0;
+        g_framework->request_save_config();
+    }
+}
+
+// [POST_PROCESSING 28.09.2026] Wie zzz_re4_farbe_test.lua: findComponents ueber
+// die ganze Szene (MainCamera + MainCamera (Clone)), set_Enabled auf jede Instanz.
+void TemporalUpscaler::apply_post_processing() {
+    // sub != nullptr: Unterobjekt der Komponente (z. B. LDRPostProcess.ColorCorrect),
+    // wie LDR_SUBS in der Farbe-Lua -- set_Enabled dann auf dem Unterobjekt.
+    auto apply = [](const char* type_name, const char* sub, bool enabled, bool& restore) {
+        if (enabled && !restore) {
+            return;   // AN und nichts zurueckzuschreiben -> Spiel nicht anfassen
+        }
+
+        restore = false;
+
+        const auto scene = sdk::get_current_scene();
+        const auto t = sdk::find_type_definition(type_name);
+
+        if (scene == nullptr || t == nullptr) {
+            return;
+        }
+
+        const auto rt = t->get_runtime_type();
+
+        if (rt == nullptr) {
+            return;
+        }
+
+        const auto arr = sdk::call_object_func_easy<sdk::SystemArray*>(scene, "findComponents(System.Type)", rt);
+
+        if (arr == nullptr) {
+            return;
+        }
+
+        const auto context = sdk::get_thread_context();
+
+        for (auto* c : arr->get_elements()) {
+            auto* target = c;
+
+            if (target != nullptr && sub != nullptr) {
+                target = sdk::call_object_func_easy<::REManagedObject*>(target, std::string{"get_"} + sub);
+            }
+
+            if (target == nullptr) {
+                continue;
+            }
+
+            const auto td = utility::re_managed_object::get_type_definition(target);
+            const auto set_enabled = td != nullptr ? td->get_method("set_Enabled") : nullptr;
+
+            if (set_enabled != nullptr) {
+                set_enabled->call<void>(context, target, enabled);
+            }
+        }
+    };
+
+    apply("via.render.Fog", nullptr, m_fog_enabled->value(), m_fog_restore);
+    apply("via.render.VolumetricFogControl", nullptr, m_volfog_enabled->value(), m_volfog_restore);
+    apply("via.render.LDRPostProcess", "ColorCorrect", m_colorcorrect_enabled->value(), m_colorcorrect_restore);
 }
 
 void TemporalUpscaler::on_early_present() {
@@ -501,7 +656,7 @@ void TemporalUpscaler::on_early_present() {
                 // Plugins WIRKT -- es war vor dem Umbau in Ordnung. Der eigene
                 // CAS-Pass dahinter kam im Bild nicht an und hat den Regler
                 // komplett totgelegt; er ist wieder raus.
-                params.sharpness = sharpness_value();   // Menue 0..10 -> 0.0..1.0
+                params.sharpness = 0.0f;   // [CAS RAUS 28.09.2026] Schaerfe nur noch im PostPass
                 params.nearPlane = m_nearz;
                 params.farPlane = m_farz;
                 params.verticalFOV = m_fov;
@@ -512,16 +667,8 @@ void TemporalUpscaler::on_early_present() {
                     copier.copy((ID3D12Resource*)m_upscaled_textures[evaluate_index], backbuffer.Get(),
                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PRESENT);
                 } else {
-                    // [CAS 15.09.2026] Erst hier ist der Upscaler gelaufen
-                    // (params.execute = i == 1). Geschaerft werden BEIDE Augen,
-                    // und zwar IN die upscaled Textur hinein -- aus der holt die
-                    // VR-Schicht ihr Bild (VR.cpp:3975).
-                    const float cas = m_sharpness->value() ? sharpness_value() : 0.0f;
-
-                    for (auto idx = 0; idx < 2; ++idx) {
-                        m_sharpen.dispatch_inplace(device, copier.cmd_list.Get(),
-                            (ID3D12Resource*)m_upscaled_textures[idx], cas);
-                    }
+                    // [CAS RAUS 28.09.2026] Hier schaerfte frueher der eigene
+                    // CAS-Pass beide Augen -- ersetzt durch den PostPass.
                 }
             }
         } else {
@@ -582,7 +729,7 @@ void TemporalUpscaler::on_early_present() {
                 params.jitterOffsetY = m_jitter_offsets[evaluate_index][1];
                 // [ZURUECK AUF DEN ALTEN WEG 15.09.2026] s. oben: der Regler
                 // geht wieder direkt an den Upscaler.
-                params.sharpness = sharpness_value();   // Menue 0..10 -> 0.0..1.0
+                params.sharpness = 0.0f;   // [CAS RAUS 28.09.2026] Schaerfe nur noch im PostPass
                 params.nearPlane = m_nearz;
                 params.farPlane = m_farz;
                 params.verticalFOV = m_fov;
@@ -593,13 +740,8 @@ void TemporalUpscaler::on_early_present() {
                     //params.renderSizeX, params.renderSizeY, params.sharpness, params.jitterOffsetX, params.jitterOffsetY, params.motionScaleX, params.motionScaleY, params.reset, params.nearPlane, params.farPlane, params.verticalFOV, params.execute);
 
                 if (i == 0) {
-                    // [CAS 15.09.2026] Hier laeuft der Upscaler in JEDEM
-                    // Durchgang (params.execute = true), also direkt danach
-                    // schaerfen -- in die upscaled Textur selbst.
+                    // [CAS RAUS 28.09.2026] Kein eigener CAS mehr -- ersetzt durch den PostPass.
                     auto* upscaled = (ID3D12Resource*)m_upscaled_textures[evaluate_index];
-                    const float cas = m_sharpness->value() ? sharpness_value() : 0.0f;
-
-                    m_sharpen.dispatch_inplace(device, copier.cmd_list.Get(), upscaled, cas);
 
                     copier.copy(upscaled, backbuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PRESENT);
                 }
@@ -742,7 +884,7 @@ bool TemporalUpscaler::init_upscale_features() {
     params.depthInverted = true;
     params.YAxisInverted = false;
     params.motionVetorsJittered = false;
-    params.enableSharpening = m_sharpness->value();
+    params.enableSharpening = false;   // [CAS RAUS 28.09.2026] Schaerfe nur noch im PostPass
     params.enableAutoExposure = false;
     m_upscaled_textures[0] = InitUpscaler(&params);
 
@@ -1231,6 +1373,7 @@ bool TemporalUpscaler::on_pre_output_layer_update(sdk::renderer::layer::Output* 
 void TemporalUpscaler::on_pre_application_entry(void* entry, const char* name, size_t hash) {
     if (hash == "BeginRendering"_fnv) {
         finish_release_resources();
+        apply_post_processing();   // [POST_PROCESSING 28.09.2026] vor dem ready()-Ausstieg, gilt auch ohne Upscaler
     }
 
     if (!ready()) {

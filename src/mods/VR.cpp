@@ -60,6 +60,178 @@
 #include "TemporalUpscaler.hpp"
 #include "VR.hpp"
 
+// ============================================================================
+// [UI_SONDE 28.09.2026 -- Ansage des Users] Messen, wie die Overlay-/UI-Ebene im
+// Multipass pro Frame laeuft (Grundlage fuer "UI vom Upscaler/PostPass
+// ausnehmen"). GOLDENE REGEL: der Fork schreibt keine Logs -- er zaehlt nur
+// (atomar, Render-Thread) und veroeffentlicht die Werte als Lua-Globals
+// __re4_uiprobe_* auf dem HAUPTthread (pre BeginRendering), niemals aus einem
+// Layer-Hook (dort Lua-Sperre = Deadlock-Gefahr). Mitschreiben: Lua-Sonde.
+// ============================================================================
+#if defined(RE4)
+#include "vr/games/RE4VR.hpp"
+#include <atomic>
+#include <mutex>
+#include <unordered_set>
+#include <chrono>
+
+namespace {
+struct UiProbe {
+    std::atomic<uint32_t> overlay_pre_draw{0};
+    std::atomic<uint32_t> overlay_draw{0};
+    std::atomic<uint32_t> overlay_pre_update{0};
+    std::atomic<uint32_t> overlay_suppressed{0};
+    std::atomic<uint32_t> ui_buffer_nonnull{0};
+    std::atomic<uint32_t> scene_pre_update{0};
+    std::atomic<uint32_t> ui_target_nonnull{0};
+    uint32_t frames{0};
+    std::mutex mtx{};
+    std::unordered_set<uintptr_t> overlay_parents{};
+    std::unordered_set<uintptr_t> overlay_layers{};
+    std::unordered_set<uintptr_t> scene_layers{};
+    std::unordered_set<uintptr_t> ui_buffers{};
+};
+
+UiProbe g_ui_probe{};
+
+// [UI_TEST 28.09.2026] Schwarz-Sichttest: wo entsteht das VR-UI im Multipass?
+// Lua-Global __re4_uitest_clear (auf dem HAUPTthread gelesen, pre BeginRendering):
+//   0 = aus
+//   1 = VOR dem PostEffect-Schritt das HDR-Bild (HDRTarget) schwarz machen
+//   2 = NACH dem PostEffect-Schritt das Ergebnis (PostMainTarget) schwarz machen
+//   3 = VOR der Overlay-Ebene PostMainTarget schwarz
+//   4 = VOR PrepareOutput PostMainTarget schwarz
+//   5 = NACH PrepareOutput dessen Ausgabe (OutputState) schwarz
+// Befund 28.09.: bei 1 UND 2 bleibt das UI stehen -> es entsteht NACH PostEffect.
+// Sieht man danach noch UI, wird es SPAETER gezeichnet als die Stelle.
+std::atomic<int32_t> g_ui_test_mode{0};
+
+void ui_test_clear_rtv(void* render_ctx, sdk::renderer::TargetState* ts) {
+    if (render_ctx == nullptr || ts == nullptr) {
+        return;
+    }
+
+    auto rtv = ts->get_rtv(0);
+
+    if (rtv == nullptr) {
+        return;
+    }
+
+    float black[4]{0.0f, 0.0f, 0.0f, 1.0f};
+    ((sdk::renderer::RenderContext*)render_ctx)->clear_rtv(rtv.get(), black, false);
+}
+
+void ui_test_clear(void* render_ctx, sdk::renderer::RenderLayer* scene_layer, const char* target) {
+    if (render_ctx == nullptr || scene_layer == nullptr) {
+        return;
+    }
+
+    auto ts = scene_layer->get_target_state(target);
+
+    if (ts == nullptr) {
+        return;
+    }
+
+    auto rtv = ts->get_rtv(0);
+
+    if (rtv == nullptr) {
+        return;
+    }
+
+    float black[4]{0.0f, 0.0f, 0.0f, 1.0f};
+    ((sdk::renderer::RenderContext*)render_ctx)->clear_rtv(rtv.get(), black, false);
+}
+
+void ui_probe_note(std::unordered_set<uintptr_t>& set, const void* p) {
+    if (p == nullptr) {
+        return;
+    }
+
+    std::scoped_lock _{g_ui_probe.mtx};
+
+    if (set.size() < 64) {
+        set.insert((uintptr_t)p);
+    }
+}
+
+// Hauptthread: alle 90 Frames Mittelwerte pro Frame + Anzahl verschiedener Objekte.
+void ui_probe_publish() {
+    auto& p = g_ui_probe;
+
+    // [UI_REIHENFOLGE] Reihenfolge des letzten Frames merken, neu beginnen
+    {
+        auto& v = VR::get();
+        std::scoped_lock _{v->m_ui_order_mtx};
+
+        if (!v->m_ui_order.empty()) {
+            v->m_ui_order_last = v->m_ui_order;
+        }
+
+        v->m_ui_order.clear();
+    }
+
+    // [UI_TEST] Modus jeden Frame vom Lua-Global uebernehmen (Hauptthread).
+    g_ui_test_mode = (int32_t)re4vr::lua_get_number_opt("__re4_uitest_clear").value_or(0.0);
+    VR::get()->m_ui_debug_mask = (g_ui_test_mode.load() == 6);   // [UI_MASKE_ROT]
+
+    if (++p.frames < 90) {
+        return;
+    }
+
+    const double f = (double)p.frames;
+    size_t parents = 0, layers = 0, scenes = 0, buffers = 0;
+
+    {
+        std::scoped_lock _{p.mtx};
+        parents = p.overlay_parents.size();
+        layers = p.overlay_layers.size();
+        scenes = p.scene_layers.size();
+        buffers = p.ui_buffers.size();
+        p.overlay_parents.clear();
+        p.overlay_layers.clear();
+        p.scene_layers.clear();
+        p.ui_buffers.clear();
+    }
+
+    re4vr::lua_set_number("__re4_uiprobe_frames", f);
+    re4vr::lua_set_number("__re4_uiprobe_overlay_pre_draw", p.overlay_pre_draw.exchange(0) / f);
+    re4vr::lua_set_number("__re4_uiprobe_overlay_draw", p.overlay_draw.exchange(0) / f);
+    re4vr::lua_set_number("__re4_uiprobe_overlay_pre_update", p.overlay_pre_update.exchange(0) / f);
+    re4vr::lua_set_number("__re4_uiprobe_overlay_suppressed", p.overlay_suppressed.exchange(0) / f);
+    re4vr::lua_set_number("__re4_uiprobe_ui_buffer_nonnull", p.ui_buffer_nonnull.exchange(0) / f);
+    re4vr::lua_set_number("__re4_uiprobe_scene_pre_update", p.scene_pre_update.exchange(0) / f);
+    re4vr::lua_set_number("__re4_uiprobe_ui_target_nonnull", p.ui_target_nonnull.exchange(0) / f);
+    re4vr::lua_set_number("__re4_uiprobe_overlay_parents", (double)parents);
+    re4vr::lua_set_number("__re4_uiprobe_overlay_layers", (double)layers);
+    re4vr::lua_set_number("__re4_uiprobe_scene_layers", (double)scenes);
+    re4vr::lua_set_number("__re4_uiprobe_ui_buffers", (double)buffers);
+    re4vr::lua_set_number("__re4_uiprobe_seq", (double)(uint64_t)std::chrono::steady_clock::now().time_since_epoch().count());
+    re4vr::lua_set_number("__re4_uitest_active", (double)g_ui_test_mode.load());
+    {
+        auto& v = VR::get();
+        std::scoped_lock _{v->m_ui_order_mtx};
+        re4vr::lua_set_string("__re4_uiprobe_order", v->m_ui_order_last);
+    }
+    // [PAARE 28.09.2026] UI-Trennung: wie oft passte das Kopien-Paar (pro 90 Frames)
+    {
+        auto& v = VR::get();
+        re4vr::lua_set_number("__re4_uiprobe_pair_ok_l", (double)v->m_ui_pair_ok[0].exchange(0));
+        re4vr::lua_set_number("__re4_uiprobe_pair_ok_r", (double)v->m_ui_pair_ok[1].exchange(0));
+        re4vr::lua_set_number("__re4_uiprobe_pair_bad_l", (double)v->m_ui_pair_bad[0].exchange(0));
+        re4vr::lua_set_number("__re4_uiprobe_pair_bad_r", (double)v->m_ui_pair_bad[1].exchange(0));
+        re4vr::lua_set_number("__re4_uiprobe_pair_old_l", (double)v->m_ui_pair_old[0].exchange(0));
+        re4vr::lua_set_number("__re4_uiprobe_pair_old_r", (double)v->m_ui_pair_old[1].exchange(0));
+        re4vr::lua_set_number("__re4_uiprobe_cap_hud_l", (double)v->m_ui_cap_hud[0].exchange(0));
+        re4vr::lua_set_number("__re4_uiprobe_cap_hud_r", (double)v->m_ui_cap_hud[1].exchange(0));
+        re4vr::lua_set_number("__re4_uiprobe_cap_fin_l", (double)v->m_ui_cap_fin[0].exchange(0));
+        re4vr::lua_set_number("__re4_uiprobe_cap_fin_r", (double)v->m_ui_cap_fin[1].exchange(0));
+    }
+
+    p.frames = 0;
+}
+}
+#endif
+
 bool inside_on_end = false;
 uint32_t actual_frame_count = 0;
 
@@ -292,14 +464,49 @@ void VR::on_camera_get_projection_matrix(REManagedObject* camera, Matrix4x4f* re
     *result = get_current_projection_matrix(false);
 }
 
+// [MAP-ASPECT 29.09.2026] x-Spalte so skalieren, dass die Projektion 16:9 statt des
+// Augen-Seitenverhaeltnisses hat (NDC-x um die Bildmitte; gilt fuer Ortho wie
+// Perspektive). Matrizen, die schon ~16:9 sind, bleiben unberuehrt.
+void VR::map_aspect_apply(Matrix4x4f& m) {
+    if (m[0][0] == 0.0f || m[1][1] == 0.0f) {
+        return;
+    }
+
+    constexpr float target = 16.0f / 9.0f;
+    const float aspect = std::abs(m[1][1] / m[0][0]);
+
+    if (std::abs(aspect - target) < 0.01f) {
+        return;
+    }
+
+    const float k = aspect / target;
+
+    for (int i = 0; i < 4; ++i) {
+        m[i][0] *= k;
+    }
+}
+
 Matrix4x4f* VR::gui_camera_get_projection_matrix_hook(REManagedObject* camera, Matrix4x4f* result) {
     auto original_func = g_projection_matrix_hook2->get_original<decltype(VR::gui_camera_get_projection_matrix_hook)>();
 
     auto& vr = VR::get();
 
-    if (result == nullptr || !g_framework->is_ready() || !vr->is_hmd_active() || vr->m_disable_gui_camera_projection_matrix_override ||
-        vr->should_suspend_camera_overrides()) {
+    if (result == nullptr || !g_framework->is_ready()) {
         return original_func(camera, result);
+    }
+
+    if (!vr->is_hmd_active() || vr->m_disable_gui_camera_projection_matrix_override ||
+        vr->should_suspend_camera_overrides()) {
+        auto out = original_func(camera, result);
+
+        // [MAP-ASPECT 29.09.2026] Nur auf dem Durchreich-Pfad (GUI-Matrix-Override aus),
+        // nur bei offener Karte, nur mit aktivem HMD und ohne Suspend.
+        if (vr->m_disable_gui_camera_projection_matrix_override && vr->is_hmd_active() &&
+            !vr->should_suspend_camera_overrides() && vr->m_map_aspect_active && vr->m_map_aspect_fix) {
+            map_aspect_apply(*result);
+        }
+
+        return out;
     }
 
     /*if (camera != sdk::get_primary_camera()) {
@@ -467,10 +674,144 @@ void VR::inputsystem_update_hook(void* ctx, REManagedObject* input_system) {
     mod->openvr_input_to_re2_re3(input_system);
 }
 
+// [UI_TRENNUNG 28.09.2026] PostMainTarget des Auges in unsere Kopie (Engine-Copy,
+// laeuft in der Reihenfolge des Engine-Frames). [28.09.2026 -- Ansage des Users]
+// NUR Multipass + Upscaler: ohne Upscaler darf die Nachbearbeitung das UI mitnehmen.
+void VR::ui_capture(void* render_context, sdk::renderer::RenderLayer* scene_layer, bool final_pass) {
+    if (render_context == nullptr || scene_layer == nullptr || !is_hmd_active() || is_vr_suspended() || !is_using_multipass()) {
+        return;
+    }
+
+    const auto& upscaler = TemporalUpscaler::get();
+
+    if (upscaler == nullptr || !upscaler->ready()) {
+        return;
+    }
+
+    const auto layers = m_camera_duplicator.get_relevant_scene_layers();
+    int eye = -1;
+
+    for (size_t i = 0; i < layers.size() && i < 2; ++i) {
+        if ((sdk::renderer::RenderLayer*)layers[i] == scene_layer) {
+            eye = (int)i;
+        }
+    }
+
+    if (eye < 0) {
+        return;
+    }
+
+    auto ts = scene_layer->get_target_state("PostMainTarget");
+
+    if (ts == nullptr) {
+        return;
+    }
+
+    auto rtv = ts->get_rtv(0);
+
+    if (rtv == nullptr) {
+        return;
+    }
+
+    auto& tex = rtv->get_texture_d3d12();
+
+    if (tex == nullptr) {
+        return;
+    }
+
+    auto desc = tex->get_desc();
+
+    if (desc == nullptr) {
+        return;
+    }
+
+    auto& cap = m_ui_capture[eye];
+    auto& dst = final_pass ? cap.final_tex : cap.hudless;
+
+    if (dst == nullptr || cap.width != desc->width || cap.height != desc->height) {
+        if (cap.width != desc->width || cap.height != desc->height) {
+            cap.hudless = nullptr;
+            cap.final_tex = nullptr;
+            cap.hudless_ok = false;
+            cap.final_ok = false;
+            cap.width = desc->width;
+            cap.height = desc->height;
+        }
+
+        dst = tex->clone();
+
+        if (dst == nullptr) {
+            return;
+        }
+    }
+
+    ((sdk::renderer::RenderContext*)render_context)->copy_texture(dst.get(), tex.get());
+    cap.scene_layer = (void*)scene_layer;
+
+    {
+        // [UI_REIHENFOLGE] H = Kopie ohne UI, F = Kopie mit UI, dahinter das Auge
+        std::scoped_lock _{m_ui_order_mtx};
+
+        if (m_ui_order.size() < 32) {
+            m_ui_order += final_pass ? 'F' : 'H';
+            m_ui_order += (char)('0' + eye);
+        }
+    }
+
+    // [PAARE 28.09.2026] Frame-Nummer mitschreiben (Engine-Frame dieser Aufzeichnung)
+    const uint64_t f = (uint64_t)m_frame_count;
+
+    if (final_pass) {
+        cap.final_frame = f;
+        cap.final_ok = true;
+        ++m_ui_cap_fin[eye];
+    } else {
+        cap.hudless_frame = f;
+        cap.hudless_ok = true;
+        ++m_ui_cap_hud[eye];
+    }
+}
+
+ID3D12Resource* VR::ui_capture_resource(int eye, bool final_pass) {
+    if (eye < 0 || eye > 1) {
+        return nullptr;
+    }
+
+    auto& cap = m_ui_capture[eye];
+    auto& t = final_pass ? cap.final_tex : cap.hudless;
+
+    if (t == nullptr) {
+        return nullptr;
+    }
+
+    auto container = t->get_d3d12_resource_container();
+
+    return container != nullptr ? container->get_native_resource() : nullptr;
+}
+
 bool VR::on_pre_overlay_layer_draw(sdk::renderer::layer::Overlay* layer, void* render_ctx) {
+    ui_capture(render_ctx, layer->get_parent(), false);   // [UI_TRENNUNG] Kopie OHNE UI
 
     auto eye_index = m_frame_count % 2;
     m_eye_states[eye_index].uiBufferTex = layer->get_ui_buffer_tex_d3d12();
+
+#if defined(RE4)
+    if (g_ui_test_mode.load() == 3) {
+        ui_test_clear(render_ctx, layer->get_parent(), "PostMainTarget");   // [UI_TEST] Stelle 3
+    }
+
+    // [UI_SONDE 28.09.2026] nur zaehlen
+    ++g_ui_probe.overlay_pre_draw;
+    if (m_eye_states[eye_index].uiBufferTex != nullptr) {
+        ++g_ui_probe.ui_buffer_nonnull;
+        ui_probe_note(g_ui_probe.ui_buffers, m_eye_states[eye_index].uiBufferTex.Get());
+    }
+    ui_probe_note(g_ui_probe.overlay_layers, layer);
+    ui_probe_note(g_ui_probe.overlay_parents, layer->get_parent());
+    if (auto ui_target = layer->get_ui_target(); ui_target != nullptr && ui_target->get_rtv(0) != nullptr) {
+        ++g_ui_probe.ui_target_nonnull;   // UITarget = Ziel, in das die Overlay-Ebene das UI zeichnet
+    }
+#endif
 
     // just don't render anything at all.
     // overlays just seem to break stuff in VR.
@@ -478,6 +819,10 @@ bool VR::on_pre_overlay_layer_draw(sdk::renderer::layer::Overlay* layer, void* r
     if (!is_hmd_active() || is_vr_suspended()) {
         return true;
     }
+
+#if defined(RE4)
+    ++g_ui_probe.overlay_suppressed;   // [UI_SONDE] bis hier = VR aktiv, Ebene wird (vermutlich) unterdrueckt
+#endif
 
     // NOT RE3
     // for some reason RE3 has weird issues with the overlay rendering
@@ -492,6 +837,10 @@ bool VR::on_pre_overlay_layer_draw(sdk::renderer::layer::Overlay* layer, void* r
 }
 
 void VR::on_overlay_layer_draw(sdk::renderer::layer::Overlay* layer, void* render_context) {
+#if defined(RE4)
+    ++g_ui_probe.overlay_draw;   // [UI_SONDE 28.09.2026] nur zaehlen
+#endif
+
     if (!is_hmd_active() || is_vr_suspended()) {
         return;
     }
@@ -527,10 +876,18 @@ void VR::on_overlay_layer_draw(sdk::renderer::layer::Overlay* layer, void* rende
 }
 
 bool VR::on_pre_overlay_layer_update(sdk::renderer::layer::Overlay* layer, void* render_ctx) {
+#if defined(RE4)
+    ++g_ui_probe.overlay_pre_update;   // [UI_SONDE 28.09.2026] nur zaehlen
+#endif
     return true;
 }
 
 bool VR::on_pre_post_effect_layer_draw(sdk::renderer::layer::PostEffect* layer, void* render_ctx) {
+#if defined(RE4)
+    if (g_ui_test_mode.load() == 1) {
+        ui_test_clear(render_ctx, layer->get_parent(), "HDRTarget");   // [UI_TEST] Stelle 1
+    }
+#endif
     // is_vr_suspended(): the distortion fix below is a VR-only correction.
     if (!is_hmd_active() || is_vr_suspended()) {
         return true;
@@ -569,6 +926,11 @@ bool VR::on_pre_post_effect_layer_draw(sdk::renderer::layer::PostEffect* layer, 
 // Pre-Hook gemerkte Distortion-Type trotzdem zurueckgestellt werden. Der Restore
 // haengt ohnehin an m_set_next_post_effect_distortion_type.
 void VR::on_post_effect_layer_draw(sdk::renderer::layer::PostEffect* layer, void* render_ctx) {
+#if defined(RE4)
+    if (g_ui_test_mode.load() == 2) {
+        ui_test_clear(render_ctx, layer->get_parent(), "PostMainTarget");   // [UI_TEST] Stelle 2
+    }
+#endif
     if (!is_hmd_active()) {
         return;
     }
@@ -595,7 +957,24 @@ bool VR::on_pre_scene_layer_draw(sdk::renderer::layer::Scene* layer, void* rende
     return true;
 }
 
+// [UI_TEST 28.09.2026] Stelle 4: vor PrepareOutput. Sonst nichts.
+bool VR::on_pre_prepare_output_layer_draw(sdk::renderer::layer::PrepareOutput* layer, void* render_context) {
+    ui_capture(render_context, layer->get_parent(), true);   // [UI_TRENNUNG] Kopie MIT UI
+#if defined(RE4)
+    if (g_ui_test_mode.load() == 4) {
+        ui_test_clear(render_context, layer->get_parent(), "PostMainTarget");
+    }
+#endif
+    return true;
+}
+
 void VR::on_prepare_output_layer_draw(sdk::renderer::layer::PrepareOutput* layer, void* render_context) {
+#if defined(RE4)
+    if (g_ui_test_mode.load() == 5) {
+        ui_test_clear_rtv(render_context, layer->get_output_state());   // [UI_TEST] Stelle 5
+    }
+#endif
+
     // is_vr_suspended(): this only re-points the output at the VR eye textures.
     if (!is_hmd_active() || is_vr_suspended()) {
         return;
@@ -660,6 +1039,12 @@ void VR::on_prepare_output_layer_draw(sdk::renderer::layer::PrepareOutput* layer
 
 bool VR::on_pre_scene_layer_update(sdk::renderer::layer::Scene* layer, void* render_ctx) {
     REF_PROFILE_FUNCTION();
+
+#if defined(RE4)
+    // [UI_SONDE 28.09.2026] nur zaehlen: Scene-Layer pro Frame
+    ++g_ui_probe.scene_pre_update;
+    ui_probe_note(g_ui_probe.scene_layers, layer);
+#endif
 
     m_scene_update_mtx.lock();
     
@@ -1285,6 +1670,27 @@ std::optional<std::string> VR::initialize_openxr() {
             extensions.push_back(XR_KHR_D3D12_ENABLE_EXTENSION_NAME);
         } else {
             extensions.push_back(XR_KHR_D3D11_ENABLE_EXTENSION_NAME);
+        }
+
+        // [STEAM_FRAME 2026-09-28] Das Frame-Controller-Profil
+        // (/interaction_profiles/valve/frame_controller_valve) gibt es nur mit
+        // dieser Extension. Nur anfordern, wenn die Runtime sie anbietet --
+        // eine unbekannte Extension liesse xrCreateInstance scheitern.
+        {
+            uint32_t ext_count = 0;
+
+            if (xrEnumerateInstanceExtensionProperties(nullptr, 0, &ext_count, nullptr) == XR_SUCCESS && ext_count > 0) {
+                std::vector<XrExtensionProperties> props(ext_count, XrExtensionProperties{XR_TYPE_EXTENSION_PROPERTIES});
+
+                if (xrEnumerateInstanceExtensionProperties(nullptr, ext_count, &ext_count, props.data()) == XR_SUCCESS) {
+                    for (const auto& p : props) {
+                        if (std::string_view{p.extensionName} == "XR_VALVE_frame_controller_interaction") {
+                            extensions.push_back("XR_VALVE_frame_controller_interaction");
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         XrInstanceCreateInfo instance_create_info{XR_TYPE_INSTANCE_CREATE_INFO};
@@ -3196,9 +3602,108 @@ struct GUIRestoreData {
     via::gui::ViewType view_type{ via::gui::ViewType::Screen };
     bool overlay{false};
     bool detonemap{true};
+    std::vector<REManagedObject*> hidden_fx{}; // [GOLD-FX] nur fuer diesen Frame ausgeblendet
 };
 
 thread_local std::vector<std::unique_ptr<GUIRestoreData>> g_elements_to_reset{};
+
+// ----------------------------------------------------------------------------
+// [GOLD-FX 29.09.2026] Gold-Partikel im Inlay-Menue ziehen in VR bleibende Spuren
+// ----------------------------------------------------------------------------
+// Im Edelstein-Inlay (Gui_ui3090) steigen Gold-Partikel auf; in VR hinterlassen sie
+// Schlieren, die nie vergehen und im Kapitelende (Gui_ui5000) im selben Zustand
+// wieder auftauchen. Flach sauber; auch mit der Installer-DLL, AFW wie Multipass,
+// FSR2/FSR4/aus, Proton 10/11 -- also ein Upstream-Fehler, kein Proton-Thema.
+//
+// Ursache (Diagnose 28./29.09., Patch perf-logs/dlls/gui-diag-inlay-trails.patch):
+// via.gui.Effect2D zeichnet die Partikel in Effekt-Ziel 4 = Overlay.UITargetOnly,
+// und das ist DIESELBE Textur wie UITarget, also das ganze Bild. Sichtbar werden
+// sie nur ueber via.gui.Effect2DTexture (Target 4), das diese Textur auf das Panel
+// legt. Flach baut der Overlay-Layer das Bild jeden Frame neu; VR ueberspringt
+// den Layer (on_pre_overlay_layer_draw), sonst sitzt jede GUI je Auge versetzt.
+// So wird nie geleert und die Partikel stapeln sich.
+// Verworfen: Layer laufen lassen (GUI-Versatz, auch ohne Overlay-Flag und ohne
+// Engine-HMD-Verzerrung), Ziel leeren (ganzes 3D schwarz), Ziel umbiegen ueber
+// Slot-Array/Feld/set_Target (wirkungslos, das Ziel steht ab Effekt-Aufbau fest).
+//
+// Daher: in VR Effect2D/Effect2DTexture mit Target 4 fuer die Dauer des Zeichnens
+// ausblenden (Option "Gold-Partikel in Menues ausblenden", Standard an). Andere
+// Effekte bleiben. Pro GUI wird der Baum nur beim ersten Mal / bei neuer View /
+// alle 300 Zeichnungen durchsucht (Inlay hat ~1000 Controls); die gefundenen
+// Controls werden per add_ref festgehalten, damit der Cache nie auf Freigegebenes zeigt.
+namespace gold_fx {
+struct Entry {
+    REComponent* view{};
+    std::vector<REManagedObject*> controls{}; // add_ref gehalten
+    uint32_t draws{};
+};
+
+std::mutex g_mtx{};
+std::unordered_map<size_t, Entry> g_cache{};
+
+template <typename F>
+void walk(REManagedObject* obj, F&& fn, int depth = 0) {
+    auto context = sdk::get_thread_context();
+    int count = 0;
+
+    for (auto node = obj; node != nullptr && count < 512; ++count) {
+        fn(node);
+
+        if (depth < 16) {
+            if (auto child = sdk::call_object_func<REManagedObject*>(node, "get_Child", context, node); child != nullptr) {
+                walk(child, fn, depth + 1);
+            }
+        }
+
+        node = sdk::call_object_func<REManagedObject*>(node, "get_Next", context, node);
+    }
+}
+
+void rescan(Entry& e, REComponent* view) {
+    for (auto c : e.controls) {
+        utility::re_managed_object::release(c);
+    }
+
+    e.controls.clear();
+    e.view = view;
+    e.draws = 0;
+
+    auto context = sdk::get_thread_context();
+
+    walk((REManagedObject*)view, [&](REManagedObject* node) {
+        if (!utility::re_managed_object::is_a(node, "via.gui.Effect2D") &&
+            !utility::re_managed_object::is_a(node, "via.gui.Effect2DTexture")) {
+            return;
+        }
+
+        if (sdk::call_object_func<int32_t>(node, "get_Target", context, node) == 4) {
+            utility::re_managed_object::add_ref(node);
+            e.controls.push_back(node);
+        }
+    });
+}
+
+void hide(size_t name_hash, std::string_view name, REComponent* view, std::vector<REManagedObject*>& out) {
+    std::scoped_lock _{g_mtx};
+    auto& e = g_cache[name_hash];
+
+    if (e.view != view || e.draws >= 300) {
+        // [GOLD-FX] Logzeile des Patches bewusst weggelassen (Fork schreibt keine Logs).
+        rescan(e, view);
+    }
+
+    ++e.draws;
+
+    auto context = sdk::get_thread_context();
+
+    for (auto c : e.controls) {
+        if (sdk::call_object_func<bool>(c, "get_Visible", context, c)) {
+            sdk::call_object_func<void*>(c, "set_Visible", context, c, false);
+            out.push_back(c);
+        }
+    }
+}
+}
 
 // [RE4 MAP GLUE 2026-08-10] Die GUIs der Karte, am 2026-08-10 bei offener Karte gemessen:
 //   3100 Navigationskreuz, 3101 Funde, 3103, 3104 Karte, 3120/3121 Karten-Ebenen.
@@ -3438,6 +3943,11 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
 
                 // Set detonemap = true (fixes weird tint)
                 sdk::call_object_func<void*>(view, "set_Detonemap", context, view, true);
+
+                // [GOLD-FX 29.09.2026] s. gold_fx oben.
+                if (m_hide_feedback_fx) {
+                    gold_fx::hide(name_hash, name, view, restore_data->hidden_fx);
+                }
 
                 // Go through the children until we hit a blur filter
                 // And then remove it
@@ -3847,6 +4357,10 @@ void VR::on_gui_draw_element(REComponent* gui_element, void* primitive_context) 
         sdk::call_object_func<void*>(data->view, "set_ViewType", context, data->view, (uint32_t)via::gui::ViewType::Screen);
         sdk::call_object_func<void*>(data->view, "set_Overlay", context, data->view, data->overlay);
         sdk::call_object_func<void*>(data->view, "set_Detonemap", context, data->view, data->detonemap);
+
+        for (auto c : data->hidden_fx) {
+            sdk::call_object_func<void*>(c, "set_Visible", context, c, true);
+        }
         
         auto game_object = utility::re_component::get_game_object(data->element);
 
@@ -4375,6 +4889,9 @@ void VR::on_pre_application_entry(void* entry, const char* name, size_t hash) {
             on_pre_wait_rendering(entry);
             break;
         case "BeginRendering"_fnv:
+#if defined(RE4)
+            ui_probe_publish();   // [UI_SONDE 28.09.2026] Hauptthread -> Lua-Globals
+#endif
             on_pre_begin_rendering(entry);
             break;
         case "EndRendering"_fnv:
@@ -4843,9 +5360,14 @@ void VR::draw_rendering_technique_ui() {
 
         static const Entry entries[] = {
             {"Single Frame Multipass", RenderingTechnique::MULTIPASS, true},
+            // [WIEDER DRIN 29.09.2026 -- Ansage des Users] Two Frame Sequential
+            // laeuft doch (kein Schwarzbild), zwischen Multipass und AFW.
+            {"Two Frame Sequential", RenderingTechnique::SEQUENTIAL_FRAME, true},
             {"AFW (beta)", RenderingTechnique::ALTERNATE_FRAME_WARPING, true},
-            {"Alternating/AFR", RenderingTechnique::ALTERNATING, false},
-            {"Two Frame Sequential", RenderingTechnique::SEQUENTIAL_FRAME, false},
+            // [RAUS 28.09.2026 -- Ansage des Users] "Alternating/AFR" steht gar
+            // nicht mehr in der Liste (war nur ausgegraut).
+            // Die enum-Werte bleiben, der Hinweis unten greift weiter, falls die
+            // Config/Numpad doch darauf steht.
         };
 
         int32_t& value = m_rendering_technique->value();
@@ -4898,17 +5420,14 @@ void VR::draw_rendering_technique_ui() {
 
         ImGui::PopStyleVar();
 
-        // Steht der Wert trotzdem auf einer der beiden ausgebauten Techniken
-        // (aus der Config oder ueber Numpad 8), dann ehrlich anzeigen statt
-        // still etwas anderes zu behaupten -- und NICHT heimlich umstellen,
-        // sonst zoege das Menue den Numpad-Umschalter sofort wieder zurueck.
-        if (value == RenderingTechnique::ALTERNATING
-            || value == RenderingTechnique::SEQUENTIAL_FRAME) {
+        // Steht der Wert trotzdem auf der ausgebauten Technik (aus der Config
+        // oder ueber Numpad 8), dann ehrlich anzeigen statt still etwas anderes
+        // zu behaupten -- und NICHT heimlich umstellen, sonst zoege das Menue
+        // den Numpad-Umschalter sofort wieder zurueck.
+        if (value == RenderingTechnique::ALTERNATING) {
             ImGui::TextColored(ImVec4{1.0f, 0.27f, 0.0f, 1.0f},
                                "Aktiv: %s (nicht mehr im Menue waehlbar)",
-                               value == RenderingTechnique::ALTERNATING
-                                   ? "Alternating/AFR"
-                                   : "Two Frame Sequential");
+                               "Alternating/AFR");
         }
     }
 
@@ -5281,8 +5800,21 @@ void VR::on_config_load(const utility::Config& cfg) {
 }
 
 void VR::on_config_save(utility::Config& cfg) {
+    // [CUT2D_MULTIPASS] Waehrend der Cutscene die VORHERIGE Technik speichern, nicht Multipass.
+    int32_t& technique = m_rendering_technique->value();
+    const int32_t live_technique = technique;
+    const bool swap = m_cut2d_mp_saved.has_value() && technique == MULTIPASS;
+
+    if (swap) {
+        technique = *m_cut2d_mp_saved;
+    }
+
     for (IModValue& option : m_options) {
         option.config_save(cfg);
+    }
+
+    if (swap) {
+        technique = live_technique;
     }
 }
 

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <utility/FunctionHook.hpp>
 #include <sdk/intrusive_ptr.hpp>
 
@@ -60,6 +61,12 @@ public:
 
     void on_draw_ui() override;
     void draw_settings(); // Inhalt ohne Header, fuer die Menue-Kategorie "Upscaler"
+    void draw_post_sliders(); // [28.09.2026] Sharpness/Saturation/Reset, ganz oben in der Kategorie
+
+    // [POST_PROCESSING 28.09.2026 -- Ansage des Users, aus der Farbe-Lua] Nebel
+    // und Volumetrischer Nebel abschaltbar. Laeuft in pre-BeginRendering auf ALLEN
+    // Instanzen (MainCamera + MainCamera (Clone)) -- wie zzz_re4_farbe_test.lua.
+    void apply_post_processing();
     void on_early_present() override; // early because it needs to run before VR.
 
     void on_post_present() override;
@@ -353,6 +360,57 @@ private:
         }, (int32_t)0)
     };
 
+    // [POST_PROCESSING 28.09.2026] Default AN = Spielzustand. AN schreibt nur
+    // EINMAL zurueck (nach dem Umschalten), AUS schreibt jeden Frame.
+    const ModToggle::Ptr m_fog_enabled{ModToggle::create(generate_name("FogEnabled"), true)};
+    const ModToggle::Ptr m_volfog_enabled{ModToggle::create(generate_name("VolumetricFogEnabled"), true)};
+    bool m_fog_restore{false};
+    bool m_volfog_restore{false};
+    // [POST_PROCESSING 28.09.2026] LDRPostProcess -> get_ColorCorrect -> set_Enabled.
+    const ModToggle::Ptr m_colorcorrect_enabled{ModToggle::create(generate_name("ColorCorrectEnabled"), true)};
+    bool m_colorcorrect_restore{false};
+
+    // [POST_PASS 28.09.2026] Eigene Schaerfe + Saettigung auf den Augenbildern
+    // (vr/D3D12Component::apply_post_pass, nur ohne Upscaler). Menue ganze Stufen:
+    // Schaerfe 0..10 (0 = aus) -> 0.0..3.0, Saettigung -10..10 (0 = neutral) -> 0.0..2.0.
+    const ModInt32::Ptr m_post_sharpness{ModInt32::create(generate_name("PostSharpness"), 0)};
+    // [0 = MITTE 28.09.2026 -- Ansage des Users] Saettigung -10..10, 0 = neutral.
+    // Neuer Config-Schluessel (_V2), sonst waere eine gespeicherte alte 10 jetzt "doppelt".
+    const ModInt32::Ptr m_post_saturation{ModInt32::create(generate_name("PostSaturation_V2"), 0)};
+    // [POST_PASS SMAA 28.09.2026] SMAA auf den Augenbildern (ohne Upscaler), Default aus.
+    const ModToggle::Ptr m_post_smaa{ModToggle::create(generate_name("PostSMAA"), false)};
+    // [BRIGHTNESS/CONTRAST 28.09.2026 -- Ansage des Users] -10..10, 0 = neutral.
+    const ModInt32::Ptr m_post_brightness{ModInt32::create(generate_name("PostBrightness"), 0)};
+    const ModInt32::Ptr m_post_contrast{ModInt32::create(generate_name("PostContrast"), 0)};
+
+public:
+    float post_sharpness() const { return (float)std::clamp(m_post_sharpness->value(), 0, 10) * 0.3f; }
+    float post_saturation() const { return (float)(std::clamp(m_post_saturation->value(), -10, 10) + 10) * 0.1f; }
+    bool post_smaa() const { return m_post_smaa->value(); }
+    // [UI_FARBE 28.09.2026] Farbkopie NACH PrepareOutput (Upscaler-Eingang, mit UI,
+    // richtiger Farbraum) fuer diese Scene-Layer; nullptr, wenn keine.
+    ID3D12Resource* get_color_copy_for(void* scene_layer) const {
+        for (const auto& st : m_eye_states) {
+            if ((void*)st.scene_layer.get() == scene_layer && st.color_copy != nullptr) {
+                auto c = st.color_copy->get_d3d12_resource_container();
+                return c != nullptr ? c->get_native_resource() : nullptr;
+            }
+        }
+        return nullptr;
+    }
+    // [UI_TRENNUNG 28.09.2026] irgendeine Nachbearbeitung an? (dann UI-Kopien noetig)
+    bool post_any_active() const {
+        return m_post_smaa->value() || m_post_sharpness->value() != 0 || m_post_saturation->value() != 0
+            || m_post_brightness->value() != 0 || m_post_contrast->value() != 0;
+    }
+    // [BRIGHTNESS/CONTRAST 28.09.2026] Menue -10..10, 0 = neutral.
+    // Helligkeit als Gamma-Exponent: +10 -> 0.5 (heller), -10 -> 2.0 (dunkler).
+    float post_brightness() const { return std::exp2(-(float)std::clamp(m_post_brightness->value(), -10, 10) * 0.1f); }
+    // Kontrast: +10 -> 1.5, -10 -> 0.5.
+    float post_contrast() const { return 1.0f + (float)std::clamp(m_post_contrast->value(), -10, 10) * 0.05f; }
+
+private:
+
      ValueList m_options{
         *m_enabled,
         *m_sharpness,
@@ -361,6 +419,14 @@ private:
         *m_dlss_preset,
         // [PERSISTENT 2026-08-19] Beide fehlten hier und wurden deshalb nie gespeichert.
         *m_enable_ui_fix,
-        *m_upscale_type_setting
+        *m_upscale_type_setting,
+        *m_fog_enabled,
+        *m_volfog_enabled,
+        *m_colorcorrect_enabled,
+        *m_post_sharpness,
+        *m_post_saturation,
+        *m_post_smaa,
+        *m_post_brightness,
+        *m_post_contrast
      };
 };

@@ -44,6 +44,7 @@ extern "C" {
 #include "mods/LooseFileLoader.hpp"
 #include "mods/PluginLoader.hpp"
 #include "mods/VR.hpp"
+#include "mods/TemporalUpscaler.hpp"   // [28.09.2026] draw_post_sliders
 #include "sdk/REGlobals.hpp"
 #include "sdk/Application.hpp"
 #include "sdk/SDK.hpp"
@@ -3044,16 +3045,16 @@ void REFramework::draw_menu_detail() {
                 request_save_config();
             }
 
-            const auto& runtime = VR::get()->get_runtime();
+            // [ALLGEMEINE REGLER 28.09.2026 -- Ansage des Users] Sharpness und
+            // Saturation gelten in jedem Zustand -> direkt unter die Aufloesung.
+            TemporalUpscaler::get()->draw_post_sliders();
 
-            // [ABSTAND 12.09.2026] Luft zwischen dem Regler und der Ueberschrift
-            // "Upscaling" -- unter OpenVR steht der Regler gar nicht da, dann auch
-            // kein Abstand und kein Trennstrich.
-            if (runtime != nullptr && runtime->loaded && runtime->is_openxr()) {
-                ImGui::Dummy(ImVec2(0.0f, ImGui::GetTextLineHeight()));
-                ImGui::Separator();
-                ImGui::Dummy(ImVec2(0.0f, ImGui::GetTextLineHeight() * 0.5f));
-            }
+            // [ABSTAND 12.09.2026] Luft zwischen den Reglern und der Ueberschrift
+            // "Upscaling". [28.09.2026] Jetzt immer, weil die Regler auch unter
+            // OpenVR dastehen.
+            ImGui::Dummy(ImVec2(0.0f, ImGui::GetTextLineHeight()));
+            ImGui::Separator();
+            ImGui::Dummy(ImVec2(0.0f, ImGui::GetTextLineHeight() * 0.5f));
 
             m_mods->draw_upscaler();
 

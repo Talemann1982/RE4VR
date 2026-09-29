@@ -14,6 +14,123 @@
 #include "D3D12Component.hpp"
 
 namespace vrmod {
+// [POST_PASS 28.09.2026 -- Ansage des Users: AA/Schaerfe/Saettigung auch OHNE
+// Upscaler, wie ReShade] Laeuft auf den fertigen Multipass-Augenbildern, bevor
+// sie in die OpenXR-/OpenVR-Swapchain kopiert werden. Mit Upscaler stehen die
+// Texturen in UNORDERED_ACCESS, ohne in COPY_DEST (so uebergeben sie die Kopien
+// unten). SMAA nur ohne Upscaler.
+void D3D12Component::apply_post_pass(VR* vr, ID3D12Device* device, uint64_t frame_count) {
+    const auto& upscaler = TemporalUpscaler::get();
+
+    if (upscaler == nullptr) {
+        return;
+    }
+
+    // [MIT UPSCALER 28.09.2026 -- Ansage des Users] Schaerfe/Saettigung gelten
+    // auch mit Upscaler. Die Augenbilder stehen dann in UNORDERED_ACCESS (so
+    // uebergeben sie die Kopien unten), ohne Upscaler in COPY_DEST. SMAA laeuft
+    // mit Upscaler NICHT -- der glaettet selbst (Toggle ist dann aus/ausgegraut).
+    const bool upscaling = upscaler->ready();
+    const auto eye_state = upscaling ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_COPY_DEST;
+
+    auto* tex0 = vr->m_multipass.eye_textures[0].Get();
+    auto* tex1 = vr->m_multipass.eye_textures[1].Get();
+
+    if (tex0 == nullptr || tex1 == nullptr) {
+        return;
+    }
+
+    const float sharp = upscaler->post_sharpness();
+    const float sat = upscaler->post_saturation();
+    const bool smaa = upscaler->post_smaa() && !upscaling;
+    const float bright = upscaler->post_brightness();
+    const float contrast = upscaler->post_contrast();
+    const bool post_active = smaa || sharp > 0.0f || sat != 1.0f || bright != 1.0f || contrast != 1.0f;
+
+    // [UI_TRENNUNG 28.09.2026 -- Ansage des Users: nur Multipass + Upscaler]
+    // Beide Engine-Kopien (ohne/mit UI) muessen in diesem Frame da sein.
+    ID3D12Resource* ui_hud[2]{};
+    ID3D12Resource* ui_fin[2]{};
+    bool ui_sep[2]{false, false};
+
+    if (upscaling) {
+        for (int e = 0; e < 2; ++e) {
+            auto& cap = vr->m_ui_capture[e];
+
+            // [FLACKERN 28.09.2026] NICHT mehr pro Frame zuruecksetzen: die Engine
+            // rendert zeitversetzt zur Abgabe, dann fehlte die Markierung jeden
+            // zweiten Frame und das UI sprang zwischen "unseres" und "DLSS".
+            // Sobald beide Kopien einmal geschrieben wurden, immer die letzten nehmen.
+            // [PAARE 28.09.2026] Nur ein Paar aus DEMSELBEN Engine-Frame benutzen.
+            // Gemischte Frames erzeugten Ghosting in bewegten Bereichen (Vegetation).
+            if (cap.hudless_ok && cap.final_ok) {
+                const uint64_t hf = cap.hudless_frame.load();
+                const uint64_t ff = cap.final_frame.load();
+
+                if (hf != ff) {
+                    ++vr->m_ui_pair_bad[e];
+                } else {
+                    if (cap.used_frame.load() == ff) {
+                        ++vr->m_ui_pair_old[e];   // Paar ist alt, aber passend -> trotzdem nehmen (kein Flackern)
+                    } else {
+                        ++vr->m_ui_pair_ok[e];
+                        cap.used_frame = ff;
+                    }
+
+                    ui_hud[e] = vr->ui_capture_resource(e, false);
+                    ui_fin[e] = vr->ui_capture_resource(e, true);
+                    ui_sep[e] = ui_hud[e] != nullptr && ui_fin[e] != nullptr;
+                }
+            }
+        }
+    }
+
+    if (!post_active && !ui_sep[0] && !ui_sep[1]) {
+        return;
+    }
+
+    auto& commands = m_post_commands[frame_count % m_post_commands.size()];
+
+    if (commands.cmd_list == nullptr) {
+        return;
+    }
+
+    commands.wait(INFINITE);
+
+    // Reihenfolge: SMAA (nur ohne Upscaler), [UI_TRENNUNG] UI zurueck, dann
+    // Brightness/Contrast/Schaerfe/Saettigung auf alles (inkl. UI).
+    bool any = false;
+    ID3D12Resource* texs[2]{tex0, tex1};
+
+    for (int e = 0; e < 2; ++e) {
+        if (smaa) {
+            any |= m_smaa_pass.dispatch_inplace(device, commands.cmd_list.Get(), texs[e], eye_state);
+        }
+
+        // [REIHENFOLGE 28.09.2026 -- Ansage des Users: unsere Shader sollen das UI
+        // mit treffen] Erst das UI unverschmiert zurueck, DANN Brightness/Contrast/
+        // Sharpness/Saturation aufs ganze Bild inkl. UI.
+        if (ui_sep[e]) {
+            // [UI_FARBE 28.09.2026] UI-Farbe aus der Upscaler-Kopie NACH PrepareOutput
+            // (Kopie "final" liegt VOR PrepareOutput -> ohne Ausgabe-Gamma = zu dunkel).
+            auto* ui_col = upscaler->get_color_copy_for(vr->m_ui_capture[e].scene_layer.load());
+
+            any |= m_ui_restore.dispatch_inplace(device, commands.cmd_list.Get(), texs[e], eye_state,
+                                                 ui_col != nullptr ? ui_col : ui_fin[e], true, ui_hud[e], ui_fin[e], e,
+                                                 vr->m_ui_debug_mask.load());
+        }
+
+        if (post_active) {
+            any |= m_post_pass.dispatch_inplace(device, commands.cmd_list.Get(), texs[e], eye_state, sharp, sat, bright, contrast);
+        }
+    }
+
+    if (any) {
+        commands.has_commands = true;
+        commands.execute();
+    }
+}
+
 vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     REF_PROFILE_FUNCTION();
 
@@ -348,6 +465,12 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
         }
     } else {
+        // [POST_PASS 28.09.2026] Vor den Kopien an OpenXR/OpenVR: Schaerfe und
+        // Saettigung direkt in die Augenbilder (nur Multipass; SMAA nur ohne Upscaler).
+        if (is_multipass) {
+            apply_post_pass(vr, device, frame_count);
+        }
+
         // OpenXR texture
         if (runtime->is_openxr() && vr->m_openxr->ready()) {
             if (is_multipass) {
@@ -615,6 +738,15 @@ void D3D12Component::on_reset(VR* vr) {
     for (auto& copier : m_generic_copiers) {
         copier.reset();
     }
+
+    // [POST_PASS 28.09.2026]
+    for (auto& commands : m_post_commands) {
+        commands.reset();
+    }
+
+    m_post_pass.reset();
+    m_smaa_pass.reset();
+    m_ui_restore.reset();   // [UI_TRENNUNG 28.09.2026]
 
     for (auto& commands : m_backbuffer_copy_commands) {
         commands.reset();
@@ -1012,6 +1144,11 @@ void D3D12Component::setup() {
 
     for (auto& copier : m_generic_copiers) {
         copier.setup(L"Generic Copier");
+    }
+
+    // [POST_PASS 28.09.2026]
+    for (auto& commands : m_post_commands) {
+        commands.setup(L"Post Pass Commands");
     }
     
     for (auto& commands : m_backbuffer_copy_commands) {

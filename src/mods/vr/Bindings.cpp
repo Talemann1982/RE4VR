@@ -94,6 +94,14 @@ std::string VR::actions_json = R"(
       "type": "boolean"
     },
     {
+      "name": "/actions/default/in/Frame_LeftA",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/default/in/Frame_LeftB",
+      "type": "boolean"
+    },
+    {
       "name": "/actions/default/in/WeaponDial_Start",
       "type": "boolean"
     },
@@ -164,6 +172,10 @@ std::string VR::actions_json = R"(
     {
       "controller_type": "rift",
       "binding_url": "binding_rift.json"
+    },
+    {
+      "controller_type": "frame_controller",
+      "binding_url": "bindings_frame.json"
     }
   ],
   "localization": []
@@ -855,4 +867,261 @@ std::string VR::bindings_knuckles = R"(
    "name" : "knuckles_default",
    "options" : {},
    "simulated_actions" : []
+})";
+
+// [STEAM_FRAME 2026-09-28] Steam-Frame-Controller (OpenVR controller_type
+// "frame_controller"). Links sitzt statt X/Y ein D-Pad -> auf die DPad-
+// Actions (= Xbox-D-Pad; LT + rechter Stick bleibt zusaetzlich). Rechts hat
+// er A/B/X/Y wie ein Xbox-Pad: A = rechtes A, B = bisheriges linkes A
+// (Frame_LeftA), X = rechtes B (Magdrop/Reload), Y = bisheriges linkes B
+// (Frame_LeftB). View (links) und Menu (rechts) = SystemButton.
+std::string VR::bindings_frame_controller = R"(
+{
+   "alias_info": {},
+   "bindings": {
+      "/actions/default": {
+         "chords": [],
+         "haptics": [
+            {
+               "output": "/actions/default/out/haptic",
+               "path": "/user/hand/left/output/haptic"
+            },
+            {
+               "output": "/actions/default/out/haptic",
+               "path": "/user/hand/right/output/haptic"
+            }
+         ],
+         "poses": [
+            {
+               "output": "/actions/default/in/pose",
+               "path": "/user/hand/left/pose/raw"
+            },
+            {
+               "output": "/actions/default/in/pose",
+               "path": "/user/hand/right/pose/raw"
+            }
+         ],
+         "skeleton": [
+            {
+               "output": "/actions/default/in/skeletonrighthand",
+               "path": "/user/hand/right/input/skeleton/right"
+            },
+            {
+               "output": "/actions/default/in/skeletonlefthand",
+               "path": "/user/hand/left/input/skeleton/left"
+            }
+         ],
+         "sources": [
+            {
+               "inputs": {
+                  "pull": {
+                     "output": "/actions/default/in/squeeze"
+                  }
+               },
+               "mode": "trigger",
+               "path": "/user/hand/left/input/grip"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/default/in/grip"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/left/input/grip"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/default/in/trigger"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/left/input/trigger"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/default/in/joystickclick"
+                  },
+                  "position": {
+                     "output": "/actions/default/in/joystick"
+                  }
+               },
+               "mode": "joystick",
+               "path": "/user/hand/left/input/thumbstick"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/default/in/systembutton"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/left/input/system"
+            },
+            {
+               "inputs": {
+                  "pull": {
+                     "output": "/actions/default/in/squeeze"
+                  }
+               },
+               "mode": "trigger",
+               "path": "/user/hand/right/input/grip"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/default/in/grip"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/right/input/grip"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/default/in/trigger"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/right/input/trigger"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/default/in/joystickclick"
+                  },
+                  "position": {
+                     "output": "/actions/default/in/joystick"
+                  }
+               },
+               "mode": "joystick",
+               "path": "/user/hand/right/input/thumbstick"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/default/in/systembutton"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/right/input/system"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/default/in/weapondial_start"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/left/input/trigger"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/default/in/abutton"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/right/input/a"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/default/in/re3_dodge"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/right/input/a"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/default/in/frame_lefta"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/right/input/b"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/default/in/bbutton"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/right/input/x"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/default/in/frame_leftb"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/right/input/y"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/default/in/dpad_up"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/left/input/dpad_up"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/default/in/dpad_down"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/left/input/dpad_down"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/default/in/dpad_left"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/left/input/dpad_left"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/default/in/dpad_right"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/left/input/dpad_right"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/default/in/systembutton"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/left/input/view"
+            },
+            {
+               "inputs": {
+                  "click": {
+                     "output": "/actions/default/in/systembutton"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/right/input/menu"
+            }
+         ]
+      }
+   },
+   "controller_type": "frame_controller",
+   "description": "",
+   "name": "frame_controller_default",
+   "options": {},
+   "simulated_actions": []
 })";

@@ -39,6 +39,9 @@ constexpr const char* CONFIG_FILE = "re4_vr/re4_vr_motion.json";
 constexpr const char* FL_CFG_PATH = "re4_vr/re4_vr_flashlight.json";
 constexpr const char* WEAPON_NONE_KEY = "none";
 
+// [2H_ALLE] Definition weiter unten (Group-B-Liste), gebraucht in apply_two_hand_aim.
+bool is_grip_dock_weapon(int32_t wid);
+
 // [FEUERWAHLSCHALTER] LE5 und Chicago Sweeper -- gleiches System, eigene
 // Offsets und Burst-Werte je Waffe.
 constexpr int32_t WID_LE5 = 4202;
@@ -3418,8 +3421,16 @@ void RE4VRMotion::apply_two_hand_aim(const VrData& vr_data, const glm::vec3& cam
     // gemessen sprang der Lauf beim Ausschalten von ~30 auf 80-106 Grad zur
     // Controller-Linie, der Handabstand schrumpfte kaum und der Pump wurde
     // nicht erkannt. Alle anderen Waffen unveraendert.
+    // [RIOT_WIE_870 29.09.2026 -- Ansage des Users] Riot Gun (4101) dazu: Tester
+    // meldete, die W-870 halte seit dem Fix, die Riot Gun reisse weiter ab.
+    // [2H_ALLE 29.09.2026 -- Ansage des Users] Riot Gun lief damit "mega" -> Regel jetzt fuer
+    // ALLE Zweihandwaffen (Group B = is_grip_dock_weapon). Z_CLAMP/WEAPON_GIVE bleiben bei
+    // 4100/4101/6100, alle anderen behalten den TWO_HAND_CLAMP (Hand statt Waffe).
+    // Zurueckbauen: Backup RE4VRMotion.cpp.bak_2026-09-29_2halle.
     const bool pump_re9 = m_wep_cache.id.has_value()
-                          && (*m_wep_cache.id == 4100 || *m_wep_cache.id == 6100);
+                          && (*m_wep_cache.id == 4100 || *m_wep_cache.id == 4101
+                              || *m_wep_cache.id == 6100
+                              || is_grip_dock_weapon(*m_wep_cache.id));
 
     if (have_lh) {
         const glm::vec3 d = lh_raw - *m_cache.rh_world;
@@ -3726,7 +3737,8 @@ void RE4VRMotion::attach_right_hand(const glm::vec3& cam_pos, const glm::quat& c
                              || re4vr::lua_get_tribool("__vr_slide_rack_active") == 1;
         // [Z_CLAMP 6100 2026-09-24] Adas Sawed-off bekommt dieselbe Ruecknahme.
         const bool want = pull.has_value() && m_wep_cache.id.has_value()
-                          && (*m_wep_cache.id == 4100 || *m_wep_cache.id == 6100) && !pumping;
+                          && (*m_wep_cache.id == 4100 || *m_wep_cache.id == 4101   // [RIOT_WIE_870]
+                              || *m_wep_cache.id == 6100) && !pumping;
 
         const bool has_give = m_support.give.has_value()
                               && (std::fabs(m_support.give->x) > 1e-5f
@@ -4420,7 +4432,9 @@ bool RE4VRMotion::get_support_pose(glm::vec3& out_pos, glm::quat& out_rot) {
                 // zurueckgehalten, bis der Griff wieder auf der
                 // Reichweitenkugel liegt -- Hand und Waffe stoppen gemeinsam.
                 // NUR wp4100; die Riot Gun bleibt vorerst aussen vor.
-                if (m_wep_cache.id.has_value() && *m_wep_cache.id == 4100 && m_two_hand.active) {
+                // [RIOT_WIE_870 29.09.2026] Riot Gun jetzt mit drin (Pump-Joint-Anker wie 4100).
+                if (m_wep_cache.id.has_value() && (*m_wep_cache.id == 4100 || *m_wep_cache.id == 4101)
+                    && m_two_hand.active) {
                     const auto lr = re4vr::lua_get_vec3("__vr_arm_chain_L_root");
                     auto lm = re4vr::lua_get_number_opt("__vr_arm_chain_L_maxreach");
 
@@ -5264,7 +5278,8 @@ void RE4VRMotion::attach_left_hand(const glm::vec3& cam_pos, const glm::quat& ca
         // schaukeln sich auf = Zittern des ganzen Arms.
         // [Z_CLAMP 6100 2026-09-24] Adas Sawed-off hat jetzt denselben Z-Clamp.
         if (!(m_wep_cache.id.has_value()
-              && (*m_wep_cache.id == 4100 || *m_wep_cache.id == 6100))) {
+              && (*m_wep_cache.id == 4100 || *m_wep_cache.id == 4101   // [RIOT_WIE_870] sonst DOPPELREGLER
+                  || *m_wep_cache.id == 6100))) {
             hand_pos = clamp_hand_to_arm_reach(hand_pos, "L");
         }
     }

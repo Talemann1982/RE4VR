@@ -327,6 +327,29 @@ public:
         "/interaction_profiles/valve/index_controller",
         "/interaction_profiles/microsoft/motion_controller",
         "/interaction_profiles/htc/vive_controller",
+        "/interaction_profiles/valve/frame_controller_valve",   // [STEAM_FRAME 2026-09-28]
+    };
+
+    // [STEAM_FRAME 2026-09-28] Steam Frame: links D-Pad statt X/Y, rechts
+    // A/B/X/Y wie ein Xbox-Pad. Die allgemeinen x/y/b-Zeilen aus s_bindings_map
+    // gelten fuer dieses Profil NICHT (sonst waere rechts X = A, Y/B = B);
+    // stattdessen die eigene Liste darunter.
+    static inline const std::string s_frame_profile{"/interaction_profiles/valve/frame_controller_valve"};
+
+    static bool frame_skips(const std::string& path) {
+        return path.ends_with("/input/x/click") || path.ends_with("/input/y/click")
+            || path.ends_with("/input/b/click");
+    }
+
+    static inline std::vector<InteractionBinding> s_frame_bindings {
+        {"/user/hand/right/input/b/click", "frame_lefta"},   // B = bisheriges linkes A
+        {"/user/hand/right/input/x/click", "bbutton"},       // X = rechtes B (Magdrop/Reload)
+        {"/user/hand/right/input/y/click", "frame_leftb"},   // Y = bisheriges linkes B
+        {"/user/hand/left/input/dpad_up/click", "dpad_up"},
+        {"/user/hand/left/input/dpad_down/click", "dpad_down"},
+        {"/user/hand/left/input/dpad_left/click", "dpad_left"},
+        {"/user/hand/left/input/dpad_right/click", "dpad_right"},
+        {"/user/hand/left/input/view/click", "systembutton"},
     };
 };
 }

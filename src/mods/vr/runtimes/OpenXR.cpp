@@ -626,6 +626,11 @@ std::optional<std::string> OpenXR::initialize_actions(const std::string& json_st
 
                 if (this->action_set.action_map.contains(map_it.action_name)) {
                     for (const auto& controller : s_supported_controllers) {
+                        // [STEAM_FRAME] x/y/b kommen beim Frame aus s_frame_bindings.
+                        if (controller == s_frame_profile && frame_skips(hand_string)) {
+                            continue;
+                        }
+
                         if (attempt_add_binding(controller, { this->action_set.action_map[map_it.action_name], p })) {
                             this->hands[index].profiles[controller].path_map[map_it.action_name] = p;
                         }
@@ -636,6 +641,28 @@ std::optional<std::string> OpenXR::initialize_actions(const std::string& json_st
                     break;
                 }
             }
+        }
+    }
+
+    // [STEAM_FRAME 2026-09-28] Frame-eigene Tasten (D-Pad links, B/X/Y rechts).
+    // Ohne die Extension scheitert das Vorschlagen still -- wie bei jedem
+    // Profil, das die Runtime nicht kennt.
+    for (const auto& fb : s_frame_bindings) {
+        if (!this->action_set.action_map.contains(fb.action_name)) {
+            continue;
+        }
+
+        XrPath p{XR_NULL_PATH};
+
+        if (xrStringToPath(this->instance, fb.interaction_path_name.c_str(), &p) != XR_SUCCESS || p == XR_NULL_PATH) {
+            continue;
+        }
+
+        const auto index = fb.interaction_path_name.find("/left/") != std::string::npos
+            ? VRRuntime::Hand::LEFT : VRRuntime::Hand::RIGHT;
+
+        if (attempt_add_binding(s_frame_profile, { this->action_set.action_map[fb.action_name], p })) {
+            this->hands[index].profiles[s_frame_profile].path_map[fb.action_name] = p;
         }
     }
 

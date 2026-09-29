@@ -825,6 +825,8 @@ void RE4VRUi::load_cfg() {
     m_opt.cutscene_2d = b("cutscene_2d", m_opt.cutscene_2d);
     m_opt.suspend = b("suspend", m_opt.suspend);
     m_opt.mapglue = b("mapglue", m_opt.mapglue);
+    m_opt.goldfx = b("goldfx", m_opt.goldfx);
+    m_opt.mapaspect = b("mapaspect", m_opt.mapaspect);
     m_glue_distance = n("glue_distance", m_glue_distance);
     m_glue_gap = n("glue_gap", m_glue_gap);
     m_opt.binoglue = b("binoglue", m_opt.binoglue);
@@ -884,6 +886,8 @@ void RE4VRUi::save_cfg() {
     d["cutscene_2d"] = m_opt.cutscene_2d;
     d["suspend"] = m_opt.suspend;
     d["mapglue"] = m_opt.mapglue;
+    d["goldfx"] = m_opt.goldfx;
+    d["mapaspect"] = m_opt.mapaspect;
     d["glue_distance"] = m_glue_distance;
     d["glue_gap"] = m_glue_gap;
     d["binoglue"] = m_opt.binoglue;
@@ -1054,6 +1058,12 @@ void RE4VRUi::cutscene_2d_tick() {
     }
 
     m_cut2d_active = want;
+
+    // [CUT2D_MULTIPASS 29.09.2026 -- Ansage des Users] Leinwand an -> Multipass, aus -> zurueck.
+    if (auto* vr = VR::get().get(); vr != nullptr) {
+        vr->set_cutscene_multipass(want);
+    }
+
     m_cut2d_kick_at = want ? clock_now() + 0.3 : 0.0;
     m_cut2d_kick_frames = 0;
     apply_canvas((m_state.map_open && m_opt.canvas) || m_cut2d_active);
@@ -1143,6 +1153,12 @@ void RE4VRUi::on_frame() {
     apply_mono(m_state.map_open && m_opt.mono);
     apply_canvas((m_state.map_open && m_opt.canvas) || cut2d_show());   // [CUT2D] aus -> wie bisher
     apply_suspend(m_state.map_open && m_opt.suspend);
+
+    // [GOLD-FX 29.09.2026] Ein Atomic, jeden Frame -- kostet nichts.
+    if (auto* vr = VR::get().get(); vr != nullptr) {
+        vr->set_hide_feedback_fx(m_opt.goldfx);
+        vr->set_map_aspect(m_state.map_open, m_opt.mapaspect);   // [MAP-ASPECT]
+    }
 
     // [FERNGLAS 2026-08-11] Zweiter Pin-Fall. Beide teilen sich den
     // Fork-Schalter, aber jeder bringt seine eigene Distanz und Liste mit;
@@ -1383,6 +1399,12 @@ void RE4VRUi::draw_dev_ui() {
 
     dirty |= ImGui::Checkbox("GUI-Matrix-Override aus (Karten-Umriss)##ui_gm",
                              &m_opt.gui_matrix);
+    // [MAP-ASPECT 29.09.2026] wirkt nur zusammen mit dem Schalter darueber.
+    dirty |= ImGui::Checkbox("Karten-Umriss auf 16:9 (Umriss pannt wie Icons)##ui_mapaspect",
+                             &m_opt.mapaspect);
+    // [GOLD-FX 29.09.2026] s. VR.cpp gold_fx.
+    dirty |= ImGui::Checkbox("Gold-Partikel in Menues ausblenden (gegen Schlieren im Inlay)##ui_gfx",
+                             &m_opt.goldfx);
     dirty |= ImGui::Checkbox("GUI-Element-Override aus (Icons/Marker)##ui_ge",
                              &m_opt.gui_elem);
     dirty |= ImGui::Checkbox("Mono-Rendering (Karten-Mesh)##ui_mono", &m_opt.mono);

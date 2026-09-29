@@ -14,6 +14,7 @@
 
 #include "d3d12/CommandContext.hpp"
 #include "d3d12/TextureContext.hpp"
+#include "d3d12/SharpenPass.hpp"   // [POST_PASS 28.09.2026] PostPass
 
 #define XR_USE_PLATFORM_WIN32
 #define XR_USE_GRAPHICS_API_D3D11
@@ -68,6 +69,14 @@ private:
     d3d12::TextureContext m_converted_eye_tex{};
     std::array<d3d12::CommandContext, 3> m_generic_copiers{};
     std::array<d3d12::CommandContext, 3> m_backbuffer_copy_commands{};
+
+    // [POST_PASS 28.09.2026] Schaerfe/Saettigung auf den Augenbildern (ohne Upscaler).
+    // Eigene Command-Listen, damit sie keiner der Kopien oben in die Quere kommen.
+    d3d12::PostPass m_post_pass{};
+    d3d12::SmaaPass m_smaa_pass{};   // [POST_PASS SMAA 28.09.2026]
+    d3d12::UiRestorePass m_ui_restore{};   // [UI_TRENNUNG 28.09.2026] nur Multipass + Upscaler
+    std::array<d3d12::CommandContext, 3> m_post_commands{};
+    void apply_post_pass(VR* vr, ID3D12Device* device, uint64_t frame_count);
     
     std::unique_ptr<DirectX::DX12::SpriteBatch> m_sprite_batch{};
 

@@ -1908,9 +1908,12 @@ void RE4VRBinding::on_frame() {
         m_lt_flip_hold = false;
     }
 
-    const bool l_abutton = digital(act_a, lh);
+    // [STEAM_FRAME 2026-09-28] Frame: rechts B = bisheriges linkes A, rechts
+    // Y = bisheriges linkes B. Die Actions sind nur im Frame-Profil gebunden,
+    // fuer alle anderen Controller bleiben sie aus.
+    const bool l_abutton = digital(act_a, lh) || digital(vr->get_action_frame_left_a(), rh);
     const bool r_abutton = digital(act_a, rh);
-    bool l_bbutton = digital(act_b, lh);
+    bool l_bbutton = digital(act_b, lh) || digital(vr->get_action_frame_left_b(), rh);
     bool r_bbutton = digital(act_b, rh);
 
     // [MANUAL_RELOAD] Autoritative B-Quelle fuer die Reload-Module. VOR dem

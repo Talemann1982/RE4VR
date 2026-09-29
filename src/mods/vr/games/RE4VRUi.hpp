@@ -96,6 +96,10 @@ private:
         // gilt, wenn die JSON den Schluessel nicht hat); aus = kein einziger zusaetzlicher Aufruf,
         // der Canvas-Zustand bleibt dann bitgleich zum bisherigen Stand.
         bool cutscene_2d{true};
+        // [GOLD-FX 29.09.2026] Gold-Partikel (Effect2D Target 4) in VR ausblenden.
+        bool goldfx{true};
+        // [MAP-ASPECT 29.09.2026] Karten-Umriss auf 16:9 (braucht gui_matrix an).
+        bool mapaspect{true};
     } m_opt{};
 
     bool m_cut2d_active{false};   // [CUT2D] Leinwand gerade wegen einer Cutscene an

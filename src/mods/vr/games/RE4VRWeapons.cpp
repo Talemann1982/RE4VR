@@ -1795,6 +1795,16 @@ bool RE4VRWeapons::cb_equip_weapon(uintptr_t raw_wid) {
     // sonst kommt bei einem Enum-Argument der obere Muell mit.
     const int32_t wid = static_cast<int32_t>(raw_wid & 0xFFFFFFFFull);
 
+    // [MINECART 28.09.2026 -- gemessen] wp4005 = Cart-Gun "Don Quixote", existiert
+    // AUSSCHLIESSLICH im Minecart und wird beim Kart-Eintritt NATIV angereicht.
+    // Der enge Riegel darunter blockte genau diesen Equip (Eintritts-Frame steht
+    // noch auf pure_gameplay): re4_grip_reload_sonde 23:31:26 -> acc wid 4005,
+    // Hand blieb 4001, __re4_game_equip_blocked=1. Wie beim Messer-Waechter
+    // (RE4VRWeapons2, 14.07.): 4005 IMMER durchlassen.
+    if (wid == 4005) {
+        return false;
+    }
+
     // ------------------------------------------------------------------
     // [ENGER RIEGEL 13.09.2026 -- Ansage "das Spiel equippt uns nichts in die
     // Hand", Variante ENG]
