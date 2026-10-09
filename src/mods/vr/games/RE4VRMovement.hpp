@@ -147,6 +147,8 @@ private:
         bool   lag_brake_on{true};
         double lag_brake_gain{0.00};
         double lag_brake_window{1.50};
+        // [ADA-HOOK-PITCH 07.10.2026] Spielkamera-Pitch auf Adas Haken (Dev-Menue, Standard an).
+        bool   ada_hook_pitch{true};
 
         // Die beiden gespeicherten Posen. In Lua sind das rohe Tabellen in cfg;
         // ein fehlendes Feld verschwindet beim json.dump_file KOMPLETT (also
@@ -265,6 +267,11 @@ private:
     bool hmd_yaw_active();
     void drive_hmd_yaw();
 
+    // ---- [ADA-HOOK-PITCH 07.10.2026] -----------------------------------------
+    // Spielkamera-Pitch auf den Greifhaken-Zielpunkt, solange Ada in seiner Reichweite steht.
+    void drive_ada_hook_pitch();
+    void ada_hook_scan();
+
     // ---- Gravitation / Lag ------------------------------------------------
     ::REManagedObject* ground_adsorber(::REManagedObject** out_ctx);
     void apply_grav_fix();
@@ -362,6 +369,18 @@ private:
     // HMD-Yaw-Drive
     RefHandle m_hmd_yaw_pcc{};
     std::optional<double> m_hmd_yaw_prev{};
+
+    // [ADA-HOOK-PITCH 07.10.2026] Nur Gimmick-DATEN (Positionen/Reichweite), keine Objektzeiger --
+    // alle 0.5 s neu per findComponents (Caching-Regel: Spielobjekte nie halten).
+    struct HookPoint {
+        glm::vec3 for_target{};   // _ForTargetPosition (Reichweite wird von hier gemessen)
+        glm::vec3 check{};        // getCheckingPosition() (dieser Punkt wird projiziert)
+        float range{0.0f};        // _InteractRangeR
+    };
+    std::vector<HookPoint> m_hook_points{};
+    double m_hook_scan_t{-1.0};
+    std::optional<double> m_hook_pitch_saved{};   // _Pitch vor der Uebernahme; gesetzt = aktiv
+    double m_hook_pitch_user_until{0.0};
 
     // Gravitation
     std::optional<double> m_grav_orig{};

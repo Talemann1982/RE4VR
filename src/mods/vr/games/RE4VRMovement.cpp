@@ -457,6 +457,7 @@ void RE4VRMovement::load_cfg() {
         m_cfg.lag_brake_on = jbool(d, "lag_brake_on", m_cfg.lag_brake_on);
         m_cfg.lag_brake_gain = jnum(d, "lag_brake_gain", m_cfg.lag_brake_gain);
         m_cfg.lag_brake_window = jnum(d, "lag_brake_window", m_cfg.lag_brake_window);
+        m_cfg.ada_hook_pitch = jbool(d, "ada_hook_pitch", m_cfg.ada_hook_pitch);
 
         if (d.contains("pin_z") && d["pin_z"].is_object()) {
             const auto& p = d["pin_z"];
@@ -611,6 +612,7 @@ void RE4VRMovement::save_cfg() {
     d["lag_brake_on"] = m_cfg.lag_brake_on;
     d["lag_brake_gain"] = m_cfg.lag_brake_gain;
     d["lag_brake_window"] = m_cfg.lag_brake_window;
+    d["ada_hook_pitch"] = m_cfg.ada_hook_pitch;
 
     // Auch hier: ein nil-Feld faellt in Lua ganz weg.
     if (m_cfg.pin_pose.is_object() && !m_cfg.pin_pose.empty()) {
@@ -3711,6 +3713,229 @@ void RE4VRMovement::drive_hmd_yaw() {
     vr->set_rotation_offset(yaw_to_quat(-*hmd));
 }
 
+// ============================================================================
+// [ADA-HOOK-PITCH 07.10.2026]
+// Der Greifhaken (chainsaw.GmHookShot.checkTriggerUse_HookShot) prueft u.a., ob sein Zielpunkt im
+// Bild der SPIELkamera liegt: Projektion mit deren View-Projection, Punkt muss in einer Ellipse um die
+// Bildmitte liegen (WideEllipse 1800 x 1274 px auf 1920 x 1080, d.h. NDC-y bis ~2.36). In VR folgt die
+// Spielkamera nur dem HMD-YAW; ihr Pitch bleibt stehen (rechter Stick-Y gesperrt, RY-Lock). Flach
+// schaut man zum Haken hoch -- in VR liegt ein Ziel, das steil UEBER Ada haengt, weit oben aus dem
+// Bild. Gemessen (Harness, Kap. 2, Haken nach oben 5.7 m): bis ~1.5 m waagrecht unter dem Ziel kommt
+// R1 mit Pitch -5 NIE (NDC-y 17), mit auf das Ziel gerichtetem Pitch sofort.
+// Deshalb: Ada in Reichweite eines Hakens (Zielpunkt horizontal <= Reichweite + 3 m), nicht beim
+// Zielen -> Spielkamera-Pitch auf den Pruefpunkt des Hakens, der dem Blick (Yaw) am naechsten
+// liegt. Die VR-Sicht haengt am HMD und aendert sich dadurch NICHT. Beim Verlassen kommt der alte
+// Pitch zurueck. Rechter Stick-Y (Upstream [ADA_PITCH_GUI]) hat Vorrang: 1 s Pause nach Eingabe.
+// Abschalten: Dev-Menue "RE4VR - Movement", Haken "Ada: Spielkamera-Pitch auf Haken".
+// ============================================================================
+
+void RE4VRMovement::ada_hook_scan() {
+    m_hook_points.clear();
+
+    static auto* scene_td = sdk::find_type_definition("via.SceneManager");
+    static auto* hook_td = sdk::find_type_definition("chainsaw.GmHookShot");
+    const auto sm = sdk::get_native_singleton("via.SceneManager");
+
+    if (scene_td == nullptr || hook_td == nullptr || sm == nullptr) {
+        return;
+    }
+
+    ::REManagedObject* scene = nullptr;
+
+    if (auto* m = scene_td->get_method("get_CurrentScene")) {
+        try {
+            scene = m->call_safe<::REManagedObject*>(sdk::get_thread_context(), sm);
+        } catch (...) {
+            scene = nullptr;
+        }
+
+        re4vr::clear_vm_exception();
+    }
+
+    if (scene == nullptr) {
+        return;
+    }
+
+    auto* comps = re4vr::call_safe<sdk::SystemArray*>(scene, "findComponents(System.Type)",
+                                                       hook_td->get_runtime_type());
+
+    if (comps == nullptr) {
+        return;
+    }
+
+    int32_t n = 0;
+
+    try {
+        n = static_cast<int32_t>(comps->get_size());
+    } catch (...) {
+        n = 0;
+    }
+
+    for (int32_t i = 0; i < n && i < 64; ++i) {
+        ::REManagedObject* c = nullptr;
+
+        try {
+            c = comps->get_element(i);
+        } catch (...) {
+            c = nullptr;
+        }
+
+        if (c == nullptr) {
+            continue;
+        }
+
+        HookPoint hp{};
+        const auto range = act_get_num(c, "_InteractRangeR");
+        auto* ft_field = utility::re_managed_object::get_type_definition(c) != nullptr
+            ? utility::re_managed_object::get_type_definition(c)->get_field("_ForTargetPosition")
+            : nullptr;
+
+        if (!range.has_value() || ft_field == nullptr || !get_vec3(c, "getCheckingPosition", hp.check)) {
+            continue;
+        }
+
+        try {
+            const auto* raw = reinterpret_cast<const float*>(ft_field->get_data_raw(c, false));
+
+            if (raw == nullptr) {
+                continue;
+            }
+
+            hp.for_target = glm::vec3{raw[0], raw[1], raw[2]};
+        } catch (...) {
+            continue;
+        }
+
+        // [ADA-HOOK-PITCH 08.10.2026] Manche Haken liefern keinen Pruefpunkt (0/0/0, im Log des Users) --
+        // dann den _ForTargetPosition nehmen; fehlt auch der, Haken auslassen (sonst zielt der Pitch auf den
+        // Weltursprung).
+        constexpr float NO_POINT = 0.001f;
+
+        if (glm::length(hp.check) < NO_POINT) {
+            hp.check = hp.for_target;
+        }
+
+        if (glm::length(hp.check) < NO_POINT || glm::length(hp.for_target) < NO_POINT) {
+            continue;
+        }
+
+        hp.range = static_cast<float>(*range);
+        m_hook_points.push_back(hp);
+    }
+}
+
+void RE4VRMovement::drive_ada_hook_pitch() {
+    const bool enabled = m_cfg.ada_hook_pitch;
+
+    auto* pcc = m_hmd_yaw_pcc.obj;
+
+    const auto release = [&]() {
+        if (m_hook_pitch_saved.has_value() && pcc != nullptr) {
+            act_set_num(pcc, "_Pitch", *m_hook_pitch_saved);
+        }
+
+        m_hook_pitch_saved.reset();
+    };
+
+    const bool ada = enabled && re4vr::lua_call_global_string("__re4_char_now") == "ada";
+
+    if (!enabled || pcc == nullptr || !ada || !hmd_yaw_active()) {
+        m_hook_points.clear();
+        release();
+        return;
+    }
+
+    const double now = now_clock();
+
+    if (now - m_hook_scan_t >= 0.5 || now < m_hook_scan_t) {
+        m_hook_scan_t = now;
+        ada_hook_scan();
+    }
+
+    // Zielen hat Vorrang (dort sperrt das Spiel den Haken ohnehin, und die Zielkamera gehoert dem Spiel).
+    const bool aiming = re4vr::lua_get_bool("is_aim", false) || re4vr::lua_get_bool("__re4_pad_lt_held", false);
+
+    if (std::fabs(re4vr::lua_get_number("__vr_right_stick_y", 0.0)) > 0.25) {
+        m_hook_pitch_user_until = now + 1.0;
+    }
+
+    auto* tf = get_body_transform();
+    glm::vec3 body{};
+    glm::vec3 cam{};
+
+    auto* def = utility::re_managed_object::get_type_definition(pcc);
+    auto* cam_field = def != nullptr ? def->get_field("_CameraPosition") : nullptr;
+    bool have_cam = false;
+
+    if (cam_field != nullptr) {
+        try {
+            if (const auto* raw = reinterpret_cast<const float*>(cam_field->get_data_raw(pcc, false))) {
+                cam = glm::vec3{raw[0], raw[1], raw[2]};
+                have_cam = true;
+            }
+        } catch (...) {
+        }
+    }
+
+    const auto yaw = act_get_num(pcc, "_Yaw");
+
+    if (aiming || now < m_hook_pitch_user_until || tf == nullptr || !have_cam || !yaw.has_value()
+        || !get_vec3(tf, "get_Position", body)) {
+        release();
+        return;
+    }
+
+    // Kandidaten: Ada in Reichweite (waagrecht zum _ForTargetPosition). Davon der Pruefpunkt, der dem
+    // Kamera-Yaw am naechsten liegt (Blickrichtung = HMD-Yaw), hoechstens 100 Grad daneben.
+    const HookPoint* best = nullptr;
+    double best_dyaw = deg2rad(100.0);
+
+    for (const auto& hp : m_hook_points) {
+        const double dxz = std::hypot(hp.for_target.x - body.x, hp.for_target.z - body.z);
+
+        if (dxz > hp.range + 3.0) {
+            continue;
+        }
+
+        const double target_yaw = std::atan2(hp.check.x - cam.x, hp.check.z - cam.z);
+        // _Yaw = Blick-Yaw der Spielkamera (gemessen: _Yaw -3.033 rad <-> Blick -173.8 Grad).
+        const double dyaw = std::fabs(wrap_pi(target_yaw - *yaw));
+
+        if (dyaw < best_dyaw) {
+            best_dyaw = dyaw;
+            best = &hp;
+        }
+    }
+
+    if (best == nullptr) {
+        release();
+        return;
+    }
+
+    const glm::vec3 d = best->check - cam;
+    const double pitch = std::clamp(std::atan2(static_cast<double>(d.y),
+                                               std::hypot(static_cast<double>(d.x), static_cast<double>(d.z))),
+                                    deg2rad(-75.0), deg2rad(75.0));
+
+    if (!m_hook_pitch_saved.has_value()) {
+        const auto cur = act_get_num(pcc, "_Pitch");
+        m_hook_pitch_saved = cur.value_or(0.0);
+
+        // Log nur bei neuem Haken-Punkt oder hoechstens alle 5 s (Zielen schaltet es staendig um).
+        static glm::vec3 s_last_logged{};
+        static double s_last_log_t{-100.0};
+
+        if (glm::length(best->check - s_last_logged) > 0.1f || now - s_last_log_t > 5.0 || now < s_last_log_t) {
+            s_last_logged = best->check;
+            s_last_log_t = now;
+            spdlog::info("[ADA-HOOK-PITCH] an: Haken-Pruefpunkt {:.2f}/{:.2f}/{:.2f}, Pitch {:.1f} -> {:.1f} Grad",
+                         best->check.x, best->check.y, best->check.z, rad2deg(*m_hook_pitch_saved), rad2deg(pitch));
+        }
+    }
+
+    act_set_num(pcc, "_Pitch", pitch);
+}
+
 void RE4VRMovement::hook_capture_pcc(::REManagedObject* pcc) {
     keep(pcc, m_hmd_yaw_pcc);
 }
@@ -3722,6 +3947,7 @@ void RE4VRMovement::hook_drive_hmd_yaw() {
     }
 
     drive_hmd_yaw();
+    drive_ada_hook_pitch();   // [ADA-HOOK-PITCH 07.10.2026] immer, damit es auch ausserhalb des Yaw-Drives loslaesst
 }
 
 // ============================================================================
@@ -4760,6 +4986,11 @@ void RE4VRMovement::draw_dev_ui() {
 
     if (ImGui::Checkbox("HMD treibt _Yaw (HMD Movement)", &m_cfg.hmd_yaw_drive)) {
         m_hmd_yaw_prev.reset();
+        save_cfg();
+    }
+
+    // [ADA-HOOK-PITCH 07.10.2026] Aus -> drive_ada_hook_pitch gibt den alten Pitch sofort zurueck.
+    if (ImGui::Checkbox("Ada: Spielkamera-Pitch auf Haken (Haken-Prompt in VR)", &m_cfg.ada_hook_pitch)) {
         save_cfg();
     }
 
