@@ -729,6 +729,10 @@ void RE4VRWeapons2::parry_hook_install() {
                 re4vr::call_safe<void*>(info, "set_RequestAction", true);
                 re4vr::call_safe<void*>(info, "set_RequestReserve", true);
 
+                // [PARRY-ACTIVETYPE 09.10.2026] Zeitmarke fuer den Equip-Riegel
+                // in RE4VRWeapons: der Messer-Equip des Spiels gehoert zum Parry.
+                re4vr::lua_set_number("__re4_parry_request_t", clock_now());
+
                 // [PARRY-RESTORE 2026-07-20] Der native Parry equippt das ECHTE
                 // Messer -- also RECHTS. War es vorher als Klon LINKS, kill die
                 // "beide Haende"-Regel den Klon. Stattdessen denselben Latch
@@ -4153,6 +4157,19 @@ void RE4VRWeapons2::parry_keep_gun_tick() {
     auto* eq = re4vr::call_safe<::REManagedObject*>(hu, "get_Equipment");
 
     if (eq == nullptr) {
+        return;
+    }
+
+    // [PARRY-ACTIVETYPE 09.10.2026] Mismatch = Waffe in der Hand, aber
+    // Equipment._ActiveType steht noch auf Sub (Messer). requestEquipGun kam
+    // da nie heraus (16 Versuche im Log 08.10., keiner wirkte): die Hand haelt
+    // die Waffe ja schon. Den Typ direkt zurueckstellen -- reiner Feld-Setter,
+    // kein Waffenwechsel, die Waffe bleibt sichtbar in der Hand. Normalfall
+    // ist das schon beim Verwerfen im Equip-Riegel passiert; das hier ist das
+    // Netz, falls das Spiel den Typ danach noch einmal gesetzt hat.
+    if (mismatch) {
+        re4vr::call_safe<void*>(eq, "set_ActiveType", 0);
+
         return;
     }
 

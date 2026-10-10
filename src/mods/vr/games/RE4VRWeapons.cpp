@@ -1685,6 +1685,43 @@ bool finisher_prompt_open() {
     return re4vr::lua_call_global_bool("__re4_is_finisher_prompt", false);
 }
 
+// [PARRY-ACTIVETYPE 09.10.2026] Der Parry ist eine Spiel-Aktion: auf unser
+// RequestAction (RE4VRWeapons2, updateParryRequest) setzt das Spiel
+// Equipment._ActiveType auf Sub (Messer) und ruft dann equipWeapon(Sub,
+// Messer). Der ENGER RIEGEL verwirft den Equip -- gewollt, die Pistole bleibt
+// sichtbar in der Hand. Aber _ActiveType blieb auf Sub, und
+// getEquipWeaponAccessor() liest genau dieses Feld (re4.exe 1411bac40:
+// InventoryController[+0xa0] mit Schluessel [this+0x60]). Folge: jeder Schuss
+// wurde dem Messer (0 Schuss) berechnet -> unendlich Munition (Log 08.10.2026
+// 19:41). Beim Verwerfen deshalb den Typ
+// zurueck auf Main stellen, solange eine Schusswaffe in der Hand ist.
+// set_ActiveType ist ein reiner Feld-Setter (1400fba90).
+constexpr int32_t EQUIP_TYPE_MAIN = 0;
+
+bool parry_request_fresh() {
+    const auto pt = re4vr::lua_get_number_opt("__re4_parry_request_t");
+
+    return pt.has_value() && (clock_now() - *pt) < 0.5;
+}
+
+void parry_restore_active_type(std::optional<int32_t> hand, uintptr_t pe_raw, int32_t blocked_wid) {
+    if (!is_knife_id(blocked_wid) || !parry_request_fresh()) {
+        return;
+    }
+
+    auto* pe = reinterpret_cast<::REManagedObject*>(pe_raw);
+
+    if (!re4vr::obj_ok(pe)) {
+        return;
+    }
+
+    if (!hand.has_value() || *hand <= 0 || is_knife_id(*hand)) {
+        return;
+    }
+
+    re4vr::call_safe<void*>(pe, "set_ActiveType", EQUIP_TYPE_MAIN);
+}
+
 }   // namespace
 
 // [KNIFE_KEEP_OUT / ENGINE-WEGNAHME 2026-07-17] DER Weg, auf dem das Spiel das
@@ -2008,6 +2045,12 @@ void RE4VRWeapons::install_equip_hooks() {
                     // Lua: args[4] = WeaponID (1-basiert) -> hier args[3].
                     if (self != nullptr && args.size() >= 4) {
                         skip = self->cb_equip_weapon(args[3]);
+
+                        // [PARRY-ACTIVETYPE 09.10.2026]
+                        if (skip) {
+                            parry_restore_active_type(
+                                self->get_equip_weapon_id(), args[1], static_cast<int32_t>(args[3] & 0xFFFFFFFFull));
+                        }
                     }
                 } catch (...) {
                     skip = false;
