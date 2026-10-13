@@ -139,6 +139,13 @@ public:
     // Bare "Resolution Scale" slider, same reason as draw_recenter_button. OpenXR only.
     // Returns true when the config should be saved.
     bool draw_resolution_scale_slider();
+    // [SYNC_MODE_CFG] Sync Mode als Dropdown in der Upscaler-Kategorie, speichert selbst.
+    void draw_sync_mode_combo();
+    // [USER_MONO 01.10.2026] "Enable Mono Rendering" oben in "Rendering". Der Wert geht
+    // NICHT direkt an set_mono_rendering, sondern in den Mono-Broker (RE4VRUi::mono_apply)
+    // -- so schaltet ein Raetsel beim Verlassen Mono nicht ab, solange der Toggle an ist.
+    void draw_user_mono_toggle();
+    bool is_user_mono() const { return m_user_mono->value(); }
     // Arms the one-shot auto recenter; called at the end of both initialize_openvr/openxr.
     void arm_auto_recenter();
     // Neigung des Zeigestrahls in Grad (negativ = nach unten).
@@ -217,30 +224,29 @@ public:
         return (RenderingTechnique)m_rendering_technique->value();
     }
 
-    // [CUT2D_MULTIPASS 29.09.2026 -- Ansage des Users] Waehrend der 2D-Cutscene-Leinwand
-    // auf Single Frame Multipass, danach zurueck auf die vorherige Technik. Die vorherige
-    // Technik bleibt die gespeicherte (on_config_save schreibt sie statt Multipass).
-    // Hat der User in der Cutscene selbst umgeschaltet, bleibt seine Wahl stehen.
-    void set_cutscene_multipass(bool on) {
+    // [CUT2D_AFW 02.10.2026 -- Ansage des Users] Umkehrung von [CUT2D_MULTIPASS]: im
+    // Multipass verliert das 2D-Bild mitten in der Cutscene die Koepfe (REFramework #1536).
+    // Wer Single Frame Multipass spielt, bekommt fuer die Dauer der Leinwand AFW, danach
+    // seine Technik zurueck. Gespeichert wird immer seine (on_config_save). AFR, AFW und
+    // Sequential bleiben unberuehrt. Hat er in der Cutscene selbst umgeschaltet, bleibt das.
+    void set_cutscene_afw(bool on) {
         int32_t& value = m_rendering_technique->value();
 
-        // Two Frame Sequential bleibt, wie es ist: der Wechsel Sequential <-> Multipass
-        // macht Aerger (User 29.09.), AFW <-> Sequential nicht.
         if (on) {
-            if (!m_cut2d_mp_saved.has_value() && value != MULTIPASS && value != SEQUENTIAL_FRAME) {
-                m_cut2d_mp_saved = value;
-                value = MULTIPASS;
+            if (!m_cut2d_saved.has_value() && value == MULTIPASS) {
+                m_cut2d_saved = value;
+                value = ALTERNATE_FRAME_WARPING;
             }
-        } else if (m_cut2d_mp_saved.has_value()) {
-            if (value == MULTIPASS) {
-                value = *m_cut2d_mp_saved;
+        } else if (m_cut2d_saved.has_value()) {
+            if (value == ALTERNATE_FRAME_WARPING) {
+                value = *m_cut2d_saved;
             }
 
-            m_cut2d_mp_saved.reset();
+            m_cut2d_saved.reset();
         }
     }
 
-    std::optional<int32_t> m_cut2d_mp_saved{};
+    std::optional<int32_t> m_cut2d_saved{};
 
     // Functions that generally use a mutex or have more complex logic
     float get_standing_height();
@@ -825,6 +831,7 @@ public:
     auto get_action_dpad_right() const { return m_action_dpad_right; }
     auto get_action_frame_left_a() const { return m_action_frame_left_a; }   // [STEAM_FRAME]
     auto get_action_frame_left_b() const { return m_action_frame_left_b; }   // [STEAM_FRAME]
+    auto get_action_frame_menu() const { return m_action_frame_menu; }       // [STEAM_FRAME]
     auto get_action_heal() const { return m_action_heal; }
     auto get_action_touchpad_click() const { return m_action_touchpad_click; }
     auto get_action_touchpad() const { return m_action_touchpad; }
@@ -1072,6 +1079,7 @@ private:
     // Nur im Frame-Profil gebunden, sonst immer aus.
     vr::VRActionHandle_t m_action_frame_left_a{};
     vr::VRActionHandle_t m_action_frame_left_b{};
+    vr::VRActionHandle_t m_action_frame_menu{};
     vr::VRActionHandle_t m_action_system_button{};
     vr::VRActionHandle_t m_action_weapon_dial{};
     vr::VRActionHandle_t m_action_re3_dodge{};
@@ -1115,6 +1123,7 @@ private:
         { "/actions/default/in/DPad_Left", m_action_dpad_left },
         { "/actions/default/in/Frame_LeftA", m_action_frame_left_a },
         { "/actions/default/in/Frame_LeftB", m_action_frame_left_b },
+        { "/actions/default/in/Frame_Menu", m_action_frame_menu },
         { "/actions/default/in/SystemButton", m_action_system_button },
         { "/actions/default/in/WeaponDial_Start", m_action_weapon_dial },
         { "/actions/default/in/RE3_Dodge", m_action_re3_dodge },
@@ -1280,8 +1289,16 @@ private:
         // re2_fw_config.txt -- die Config sticht diesen Default ohnehin.
         2 // Single Frame Multipass
 #endif
-        ) 
+        )
     };
+    // [SYNC_MODE_CFG 2026-09-30] Sync Mode in der Config: 1=Early, 2=Late, 3=Very Late.
+    const ModInt32::Ptr m_sync_mode{ ModInt32::create(generate_name("SyncMode"), 1) };
+    const ModToggle::Ptr m_user_mono{ ModToggle::create(generate_name("UserMonoRendering"), false) };   // [USER_MONO]
+    void apply_sync_mode() {
+        const auto stage = (VRRuntime::SynchronizeStage)std::clamp(m_sync_mode->value() - 1, 0, 2);
+        m_openvr->custom_stage = stage;
+        m_openxr->custom_stage = stage;
+    }
     const ModToggle::Ptr m_use_custom_view_distance{ ModToggle::create(generate_name("UseCustomViewDistance"), false) };
     const ModToggle::Ptr m_hmd_oriented_audio{ ModToggle::create(generate_name("HMDOrientedAudio"), true) };
     const ModSlider::Ptr m_view_distance{ ModSlider::create(generate_name("CustomViewDistance"), 10.0f, 3000.0f, 500.0f) };
@@ -1395,6 +1412,7 @@ private:
         *m_zoom_scales_eye_offset,
         *m_zoom_shrinks_ipd,
         *m_rendering_technique,
+        *m_sync_mode,
         *m_use_custom_view_distance,
         *m_hmd_oriented_audio,
         *m_view_distance,
@@ -1417,6 +1435,7 @@ private:
         *m_world_ui_scale_option,
         *m_allow_engine_overlays,
         *m_resolution_scale,
+        *m_user_mono,
         *m_overlay_pointer_pitch,
         *m_desktop_fix,
         *m_desktop_fix_skip_present,

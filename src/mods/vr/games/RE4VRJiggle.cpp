@@ -9,10 +9,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <ctime>
-#include <deque>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 
 #include <imgui.h>
 
@@ -35,8 +33,7 @@ double clock_now() {
     return static_cast<double>(std::clock()) / static_cast<double>(CLOCKS_PER_SEC);
 }
 
-// Methoden-Cache: die Ketten-Schleife ruft pro Frame hunderte Getter -- die
-// TDB-Suche nach dem Namen nur einmal je Typ.
+// Methoden-Cache: die TDB-Suche nach dem Namen nur einmal je Typ.
 sdk::REMethodDefinition* meth(::REManagedObject* obj, std::string_view name) {
     if (!re4vr::obj_ok(obj)) {
         return nullptr;
@@ -99,33 +96,6 @@ bool get_vec3(::REManagedObject* obj, std::string_view name, glm::vec3& out) {
     return false;
 }
 
-// Getter mit einem int-Argument (getNodePosition(i)).
-bool get_vec3_i(::REManagedObject* obj, std::string_view name, int32_t i, glm::vec3& out) {
-    auto* m = meth(obj, name);
-
-    if (m == nullptr) {
-        return false;
-    }
-
-    auto context = sdk::get_thread_context();
-    __declspec(align(16)) glm::vec4 buf{};
-    bool ok = false;
-
-    try {
-        m->call_safe<glm::vec4*>(&buf, context, obj, i);
-        ok = true;
-    } catch (...) {
-        ok = false;
-    }
-
-    if (clear_pending(context, ok)) {
-        out = glm::vec3{buf.x, buf.y, buf.z};
-        return true;
-    }
-
-    return false;
-}
-
 bool get_quat(::REManagedObject* obj, std::string_view name, glm::quat& out) {
     auto* m = meth(obj, name);
 
@@ -173,50 +143,6 @@ bool set_quat(::REManagedObject* obj, std::string_view name, const glm::quat& q)
     return clear_pending(context, ok);
 }
 
-// Luas Vector3f.new an eine via.vec3-Signatur.
-bool set_vec3(::REManagedObject* obj, std::string_view name, const glm::vec3& v) {
-    auto* m = meth(obj, name);
-
-    if (m == nullptr) {
-        return false;
-    }
-
-    auto context = sdk::get_thread_context();
-    __declspec(align(16)) glm::vec4 buf{v.x, v.y, v.z, 1.0f};
-    bool ok = false;
-
-    try {
-        m->call_safe<void*>(context, obj, &buf);
-        ok = true;
-    } catch (...) {
-        ok = false;
-    }
-
-    return clear_pending(context, ok);
-}
-
-// impulsePushNode(int, via.vec3)
-bool call_i_vec3(::REManagedObject* obj, std::string_view name, int32_t i, const glm::vec3& v) {
-    auto* m = meth(obj, name);
-
-    if (m == nullptr) {
-        return false;
-    }
-
-    auto context = sdk::get_thread_context();
-    __declspec(align(16)) glm::vec4 buf{v.x, v.y, v.z, 1.0f};
-    bool ok = false;
-
-    try {
-        m->call_safe<void*>(context, obj, i, &buf);
-        ok = true;
-    } catch (...) {
-        ok = false;
-    }
-
-    return clear_pending(context, ok);
-}
-
 std::string name_of(::REManagedObject* go) {
     auto* s = re4vr::call_safe<::REManagedObject*>(go, "get_Name");
 
@@ -253,45 +179,9 @@ glm::vec3 clamp_len(const glm::vec3& v, float max_len) {
     return (l > max_len && l > 1e-8f) ? v * (max_len / l) : v;
 }
 
-// Kugel-Hand gegen Punkt: Feder (Eindringtiefe) + Daempfung (Annaeherung) +
-// Reibung (Tangentialanteil). Leer = kein Kontakt. Wie im Lua-Original.
-struct Contact {
-    glm::vec3 impulse{};
-    float pen{0.0f};
-};
-
-std::optional<Contact> soft_contact(const glm::vec3& hand, const glm::vec3& point,
-                                    const glm::vec3& vel, float radius, float spring,
-                                    float damping, float friction) {
-    const glm::vec3 delta = point - hand;
-    const float d = glm::length(delta);
-
-    if (d >= radius || d < 1e-5f) {
-        return std::nullopt;
-    }
-
-    const glm::vec3 n = delta / d;
-    const float pen = radius - d;
-    const float approach = glm::dot(vel, n);
-    const glm::vec3 tan = vel - n * approach;
-
-    Contact c{};
-    c.impulse = n * (spring * pen) + n * (damping * std::max(0.0f, approach)) + tan * friction;
-    c.pen = pen;
-
-    return c;
-}
-
 bool quat_close(const glm::quat& a, const glm::quat& b) {
     return std::abs(glm::dot(a, b)) > 0.999999f;
 }
-
-constexpr const char* SOFT_JOINT_NAMES[] = {
-    "L_Bust", "R_Bust", "L_Breast", "R_Breast", "Bust_L", "Bust_R",
-    "L_Pectoral", "R_Pectoral", "Pectoral_L", "Pectoral_R",
-    "Spine_2", "Spine_1", "Spine", "Chest", "C_Spine2", "C_Spine1",
-    "Hip", "stomach",
-};
 
 } // namespace
 
@@ -354,10 +244,6 @@ void RE4VRJiggle::hands(std::optional<glm::vec3>& lh, std::optional<glm::vec3>& 
 void RE4VRJiggle::drop_all() {
     m_body = nullptr;
     m_body_addr = 0;
-    m_cloth_mgr = nullptr;
-    m_gpu_cloths.clear();
-    m_chains.clear();
-    m_soft.clear();
     m_head_j = nullptr;
     m_neck_j = nullptr;
     m_jw_head = JointWrite{};
@@ -367,13 +253,10 @@ void RE4VRJiggle::drop_all() {
     m_head_prev[0].reset();
     m_head_prev[1].reset();
     m_head_inzone[0] = m_head_inzone[1] = false;
-    m_prev_lh.reset();
-    m_prev_rh.reset();
-    m_wind_zeroed = true;
 }
 
-// Jeden Frame: nur der Adressvergleich. Der Baum wird nur bei einem NEUEN
-// Koerper abgelaufen -- nach Save-Load/Tod sind alle alten Zeiger Leichen.
+// Jeden Frame: nur der Adressvergleich. Die Joints werden nur bei einem NEUEN
+// Koerper gesucht -- nach Save-Load/Tod sind alle alten Zeiger Leichen.
 void RE4VRJiggle::refresh_body() {
     auto* body = resolve_body();
     const auto a = reinterpret_cast<uintptr_t>(body);
@@ -393,295 +276,13 @@ void RE4VRJiggle::discover(::REManagedObject* body) {
     m_body = body;
     m_body_addr = reinterpret_cast<uintptr_t>(body);
 
-    // Kinder-GOs breitenweise (wie walk_collect, hoechstens 128).
-    std::deque<::REManagedObject*> queue{body};
-    std::unordered_set<::REManagedObject*> seen{};
-    int visited = 0;
-
-    while (!queue.empty() && visited < 128) {
-        auto* go = queue.front();
-        queue.pop_front();
-
-        if (go == nullptr || !seen.insert(go).second) {
-            continue;
-        }
-
-        ++visited;
-
-        if (m_cloth_mgr == nullptr) {
-            m_cloth_mgr = re4vr::get_component(go, "chainsaw.GPUClothCharacter");
-        }
-
-        if (auto* gc = re4vr::get_component(go, "via.dynamics.GpuCloth")) {
-            m_gpu_cloths.push_back(gc);
-        }
-
-        if (auto* ch = re4vr::get_component(go, "via.motion.Chain")) {
-            m_chains.push_back(ch);
-        }
-
-        auto* tf = re4vr::call_safe<::REManagedObject*>(go, "get_Transform");
-        auto* child = re4vr::call_safe<::REManagedObject*>(tf, "get_Child");
-
-        for (int guard = 0; child != nullptr && guard < 64; ++guard) {
-            if (auto* cgo = re4vr::call_safe<::REManagedObject*>(child, "get_GameObject")) {
-                queue.push_back(cgo);
-            }
-
-            child = re4vr::call_safe<::REManagedObject*>(child, "get_Next");
-        }
-    }
-
     auto* btf = re4vr::call_safe<::REManagedObject*>(body, "get_Transform");
-
-    for (const char* jn : SOFT_JOINT_NAMES) {
-        if (auto* j = joint_exact(btf, jn)) {
-            m_soft.push_back(SoftJoint{jn, j});
-        }
-    }
 
     m_head_j = joint_exact(btf, "Head");
     m_neck_j = joint_exact(btf, "Neck_1");
 
     if (m_neck_j == nullptr) {
         m_neck_j = joint_exact(btf, "Neck_0");
-    }
-}
-
-// ============================================================================
-// Stoff / Ketten / Wind -- LateUpdateBehavior (nach GPUClothCharacter.update)
-// ============================================================================
-void RE4VRJiggle::zero_wind() {
-    if (m_wind_zeroed) {
-        return;
-    }
-
-    for (auto* gc : m_gpu_cloths) {
-        set_vec3(gc, "set_DirectWindForce", glm::vec3{0.0f});
-        set_vec3(gc, "set_DirectWindVelocity", glm::vec3{0.0f});
-    }
-
-    for (auto* ch : m_chains) {
-        re4vr::call_safe<void*>(ch, "set_ExternalWindPower", 0.0f);
-    }
-
-    m_wind_zeroed = true;
-}
-
-void RE4VRJiggle::tick_body() {
-    if (m_body == nullptr) {
-        return;
-    }
-
-    std::optional<glm::vec3> lh{}, rh{};
-    hands(lh, rh);
-
-    // Naechste Hand zum naechsten weichen Ziel.
-    std::vector<glm::vec3> targets{};
-
-    for (const auto& sj : m_soft) {
-        glm::vec3 p{};
-
-        if (get_vec3(sj.joint, "get_Position", p)) {
-            targets.push_back(p);
-        }
-    }
-
-    if (targets.empty()) {
-        auto* tf = re4vr::call_safe<::REManagedObject*>(m_body, "get_Transform");
-        glm::vec3 p{};
-
-        if (get_vec3(tf, "get_Position", p)) {
-            targets.push_back(p);
-        }
-    }
-
-    float best_d = 1e9f;
-    std::optional<glm::vec3> best_h{}, best_t{};
-    bool best_is_r = false;
-
-    for (int hi = 0; hi < 2; ++hi) {
-        const auto& h = hi == 0 ? lh : rh;
-
-        if (!h.has_value()) {
-            continue;
-        }
-
-        for (const auto& t : targets) {
-            const float d = glm::length(*h - t);
-
-            if (d < best_d) {
-                best_d = d;
-                best_h = *h;
-                best_t = t;
-                best_is_r = hi == 1;
-            }
-        }
-    }
-
-    m_dist = best_h.has_value() ? best_d : -1.0f;
-
-    // Haende weit weg: nichts ansteuern (die Ketten-Schleife ist das Teure).
-    // Nur mit echten weichen Joints -- die Wurzel sitzt an ihren Fuessen.
-    if (!m_soft.empty() && (m_dist < 0.0f || m_dist > cfg.active_range)) {
-        zero_wind();
-        m_contact_cloth = m_contact_chain = false;
-        m_prev_lh = lh;
-        m_prev_rh = rh;
-        return;
-    }
-
-    if (best_h.has_value()) {
-        if (cfg.drive_cloth) {
-            drive_cloth(*best_h);
-        }
-
-        if (cfg.drive_chain) {
-            drive_chain(lh, rh);
-        }
-
-        if (cfg.drive_wind) {
-            const auto& prev = best_is_r ? m_prev_rh : m_prev_lh;
-            const glm::vec3 vel = prev.has_value() ? *best_h - *prev : glm::vec3{0.0f};
-            drive_wind(*best_h, *best_t, vel);
-        }
-    }
-
-    m_prev_lh = lh;
-    m_prev_rh = rh;
-}
-
-// _HandCapsule: kurze Kapsel um die naehere Hand. Geschrieben ueber die
-// Feld-Offsets aus der TDB (via.Capsule p0/p1/r) -- fehlen sie, bleibt nur
-// der Radius-Setter.
-void RE4VRJiggle::drive_cloth(const glm::vec3& hand) {
-    auto* mgr = m_cloth_mgr;
-
-    if (mgr == nullptr) {
-        return;
-    }
-
-    auto* td = utility::re_managed_object::get_type_definition(mgr);
-    auto* f_cap = td != nullptr ? td->get_field("_HandCapsule") : nullptr;
-    auto* ctd = f_cap != nullptr ? f_cap->get_type() : nullptr;
-
-    if (f_cap != nullptr && ctd != nullptr) {
-        auto* f0 = ctd->get_field("p0");
-        auto* f1 = ctd->get_field("p1");
-        auto* fr = ctd->get_field("r");
-        // Container ist das Managed Object -> false (s. get_data_raw-Falle).
-        auto* cap = f_cap->get_data_raw(mgr, false);
-
-        if (cap != nullptr && f0 != nullptr && f1 != nullptr && fr != nullptr) {
-            const glm::vec3 half{0.0f, cfg.hand_capsule_len * 0.5f, 0.0f};
-            const glm::vec3 p0 = hand - half;
-            const glm::vec3 p1 = hand + half;
-            // Container ist jetzt die eingebettete Struct -> true.
-            auto* a0 = reinterpret_cast<float*>(f0->get_data_raw(cap, true));
-            auto* a1 = reinterpret_cast<float*>(f1->get_data_raw(cap, true));
-            auto* ar = reinterpret_cast<float*>(fr->get_data_raw(cap, true));
-
-            if (a0 != nullptr && a1 != nullptr && ar != nullptr) {
-                a0[0] = p0.x; a0[1] = p0.y; a0[2] = p0.z;
-                a1[0] = p1.x; a1[1] = p1.y; a1[2] = p1.z;
-                *ar = cfg.cloth_radius;
-            }
-        }
-    }
-
-    re4vr::call_safe<void*>(mgr, "set_HandCapsuleRad", cfg.cloth_radius);
-    m_contact_cloth = m_dist >= 0.0f && m_dist < (cfg.cloth_radius + cfg.poke_range);
-}
-
-void RE4VRJiggle::drive_wind(const glm::vec3& hand, const glm::vec3& soft, const glm::vec3& vel) {
-    if (m_gpu_cloths.empty()) {
-        return;
-    }
-
-    const auto c = soft_contact(hand, soft, vel, cfg.poke_range, cfg.contact_spring,
-                                cfg.contact_damping, cfg.contact_friction);
-    const float dist = glm::length(soft - hand);
-
-    for (auto* gc : m_gpu_cloths) {
-        re4vr::call_safe<void*>(gc, "set_LocalWind", true);
-
-        if (c.has_value()) {
-            // (applyWorldOffset bewusst NICHT: verschiebt die ganze Simulation.)
-            const glm::vec3 force = clamp_len(c->impulse * (cfg.wind_strength * 8.0f), cfg.wind_strength);
-            set_vec3(gc, "set_DirectWindForce", force);
-            set_vec3(gc, "set_DirectWindVelocity", force * 0.5f);
-            m_wind_zeroed = false;
-        } else if (dist < cfg.wind_range) {
-            const glm::vec3 into = glm::normalize(soft - hand);
-            const glm::vec3 air = into * (cfg.wind_strength * 0.15f * (1.0f - dist / cfg.wind_range));
-            set_vec3(gc, "set_DirectWindForce", air);
-            set_vec3(gc, "set_DirectWindVelocity", air * 0.4f);
-            m_wind_zeroed = false;
-        } else {
-            set_vec3(gc, "set_DirectWindForce", glm::vec3{0.0f});
-            set_vec3(gc, "set_DirectWindVelocity", glm::vec3{0.0f});
-        }
-    }
-}
-
-void RE4VRJiggle::drive_chain(const std::optional<glm::vec3>& lh, const std::optional<glm::vec3>& rh) {
-    m_contact_chain = false;
-
-    const std::optional<glm::vec3> hs[2] = {lh, rh};
-    const std::optional<glm::vec3> ps[2] = {m_prev_lh, m_prev_rh};
-
-    for (auto* ch : m_chains) {
-        int32_t gcount = 0;
-        re4vr::try_call<int32_t>(ch, "getGroupCount", gcount);
-        bool chain_hit = false;
-
-        for (int32_t gi = 0; gi < std::min<int32_t>(gcount, 32); ++gi) {
-            auto* grp = re4vr::call_safe<::REManagedObject*>(ch, "getGroup", gi);
-
-            if (grp == nullptr) {
-                continue;
-            }
-
-            int32_t ncount = 0;
-            re4vr::try_call<int32_t>(grp, "get_NodeCount", ncount);
-            bool group_hit = false;
-
-            for (int32_t ni = 0; ni < std::min<int32_t>(ncount, 16); ++ni) {
-                glm::vec3 npos{};
-
-                if (!get_vec3_i(grp, "getNodePosition", ni, npos)) {
-                    continue;
-                }
-
-                for (int hi = 0; hi < 2; ++hi) {
-                    if (!hs[hi].has_value()) {
-                        continue;
-                    }
-
-                    const glm::vec3 vel = ps[hi].has_value() ? *hs[hi] - *ps[hi] : glm::vec3{0.0f};
-                    const auto c = soft_contact(*hs[hi], npos, vel, cfg.chain_radius, cfg.contact_spring,
-                                                cfg.contact_damping, cfg.contact_friction);
-
-                    if (c.has_value()
-                        && call_i_vec3(grp, "impulsePushNode", ni, clamp_len(c->impulse, cfg.chain_impulse_max))) {
-                        group_hit = chain_hit = true;
-                    }
-                }
-            }
-
-            if (group_hit) {
-                re4vr::call_safe<void*>(grp, "set_WindCoef", 1.4f);
-            }
-        }
-
-        if (chain_hit) {
-            m_contact_chain = true;
-            m_wind_zeroed = false;
-            re4vr::call_safe<void*>(ch, "set_ExternalWindAddMode", true);
-            re4vr::call_safe<void*>(ch, "set_ExternalWindPower", std::min(4.0f, cfg.wind_strength * 0.25f));
-        } else {
-            re4vr::call_safe<void*>(ch, "set_ExternalWindPower", 0.0f);
-        }
     }
 }
 
@@ -867,22 +468,8 @@ void RE4VRJiggle::cfg_ensure() {
         };
 
         rb("enabled", cfg.enabled);
-        rb("drive_cloth", cfg.drive_cloth);
-        rb("drive_chain", cfg.drive_chain);
-        rb("drive_wind", cfg.drive_wind);
         rb("drive_head", cfg.drive_head);
         rb("sounds", cfg.sounds);
-        rf("cloth_radius", cfg.cloth_radius);
-        rf("chain_radius", cfg.chain_radius);
-        rf("hand_capsule_len", cfg.hand_capsule_len);
-        rf("contact_spring", cfg.contact_spring);
-        rf("contact_damping", cfg.contact_damping);
-        rf("contact_friction", cfg.contact_friction);
-        rf("chain_impulse_max", cfg.chain_impulse_max);
-        rf("wind_strength", cfg.wind_strength);
-        rf("wind_range", cfg.wind_range);
-        rf("poke_range", cfg.poke_range);
-        rf("active_range", cfg.active_range);
         rf("head_radius", cfg.head_radius);
         rf("head_gain", cfg.head_gain);
         rf("head_max_deg", cfg.head_max_deg);
@@ -906,22 +493,8 @@ void RE4VRJiggle::cfg_save() {
     nlohmann::json j = nlohmann::json::object();
 
     j["enabled"] = cfg.enabled;
-    j["drive_cloth"] = cfg.drive_cloth;
-    j["drive_chain"] = cfg.drive_chain;
-    j["drive_wind"] = cfg.drive_wind;
     j["drive_head"] = cfg.drive_head;
     j["sounds"] = cfg.sounds;
-    j["cloth_radius"] = cfg.cloth_radius;
-    j["chain_radius"] = cfg.chain_radius;
-    j["hand_capsule_len"] = cfg.hand_capsule_len;
-    j["contact_spring"] = cfg.contact_spring;
-    j["contact_damping"] = cfg.contact_damping;
-    j["contact_friction"] = cfg.contact_friction;
-    j["chain_impulse_max"] = cfg.chain_impulse_max;
-    j["wind_strength"] = cfg.wind_strength;
-    j["wind_range"] = cfg.wind_range;
-    j["poke_range"] = cfg.poke_range;
-    j["active_range"] = cfg.active_range;
     j["head_radius"] = cfg.head_radius;
     j["head_gain"] = cfg.head_gain;
     j["head_max_deg"] = cfg.head_max_deg;
@@ -1092,7 +665,6 @@ void RE4VRJiggle::on_application_entry(void* entry, const char* name, size_t has
 
     if (hash == "LateUpdateBehavior"_fnv) {
         refresh_body();
-        tick_body();
         tick_reply();
     } else if (hash == "UpdateJointExpression"_fnv) {
         // [KEIN KOPF IM GRIFF 20.09.2026] Beim Wuergegriff liegt die Hand am
@@ -1126,21 +698,8 @@ void RE4VRJiggle::draw_dev_ui() {
     cfg_ensure();
     bool ch = false;
 
-    if (ImGui::Checkbox("Enabled##jig", &cfg.enabled)) {
-        ch = true;
-
-        if (!cfg.enabled) {
-            zero_wind();
-        }
-    }
-
+    ch |= ImGui::Checkbox("Enabled##jig", &cfg.enabled);
     ch |= ImGui::Checkbox("Head##jig", &cfg.drive_head);
-    ImGui::SameLine();
-    ch |= ImGui::Checkbox("Cloth##jig", &cfg.drive_cloth);
-    ImGui::SameLine();
-    ch |= ImGui::Checkbox("Chain##jig", &cfg.drive_chain);
-    ImGui::SameLine();
-    ch |= ImGui::Checkbox("Wind##jig", &cfg.drive_wind);
 
     ch |= ImGui::SliderFloat("Head sensitivity (master)##jig", &cfg.head_sensitivity, 0.1f, 3.0f, "%.2f");
     ch |= ImGui::SliderFloat("Head gain##jig", &cfg.head_gain, 1.0f, 40.0f, "%.1f");
@@ -1157,17 +716,10 @@ void RE4VRJiggle::draw_dev_ui() {
     ch |= ImGui::SliderFloat("Reply delay##jig", &cfg.reply_delay, 0.2f, 3.0f, "%.2f s");
     ch |= ImGui::SliderFloat("Slap dB##jig", &cfg.slap_gain_db, -30.0f, 12.0f, "%+.1f dB");
 
-    ch |= ImGui::SliderFloat("Cloth hand radius##jig", &cfg.cloth_radius, 0.02f, 0.20f, "%.3f");
-    ch |= ImGui::SliderFloat("Chain contact radius##jig", &cfg.chain_radius, 0.04f, 0.25f, "%.3f");
-    ch |= ImGui::SliderFloat("Wind strength##jig", &cfg.wind_strength, 0.0f, 20.0f, "%.2f");
-    ch |= ImGui::SliderFloat("Poke range##jig", &cfg.poke_range, 0.10f, 0.50f, "%.2f");
-
-    ImGui::Text("Body: %s  cloth=%d chain=%d soft=%d head=%s neck=%s",
+    ImGui::Text("Body: %s  head=%s neck=%s",
                 m_body != nullptr ? name_of(m_body).c_str() : "-",
-                (int)m_gpu_cloths.size(), (int)m_chains.size(), (int)m_soft.size(),
                 m_head_j != nullptr ? "ja" : "nein", m_neck_j != nullptr ? "ja" : "nein");
-    ImGui::Text("Dist %.3f m  cloth=%d chain=%d  head=%d tilt=%.1f deg",
-                m_dist, (int)m_contact_cloth, (int)m_contact_chain, (int)m_contact_head, m_head_angle);
+    ImGui::Text("head=%d tilt=%.1f deg", (int)m_contact_head, m_head_angle);
 
     // Jede Aenderung landet in der JSON -- geschrieben, sobald der Regler
     // losgelassen ist (nicht bei jedem Zwischenwert).

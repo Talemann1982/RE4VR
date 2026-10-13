@@ -447,6 +447,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 //}
                 //ctx.commands.execute();
 
+                // [CUT2D_AFW 02.10.2026] Das rechte Bild ist hier der Framewarp des linken
+                // Frames -- im Leinwand-Modus zeigte es als Rahmen das Spielbild, das mit
+                // dem Kopf wanderte. Unter OpenXR erledigt das xr_fn bereits.
+                if (vr->should_blank_all_eyes()) {
+                    m_openvr.clear_right();
+                }
+
                 vr::D3D12TextureData_t right{m_openvr.get_right().texture.Get(), command_queue, 0};
 
                 vr::Texture_t right_eye{(void*)&right, vr::TextureType_DirectX12, vr::ColorSpace_Auto};
@@ -639,6 +646,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 //    ctx.commands.copy((ID3D12Resource*)params.OutEyeFrameBuffer->color.pTexture, ctx.texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
                 //}
                 //ctx.commands.execute();
+
+                // [CUT2D_AFW 02.10.2026] Gegenstueck: links ist hier der Framewarp.
+                if (vr->should_blank_all_eyes()) {
+                    m_openvr.clear_left();
+                }
 
                 vr::D3D12TextureData_t left{m_openvr.get_left().texture.Get(), command_queue, 0};
 

@@ -3899,6 +3899,9 @@ void RE4VRMovement::apply_lag_fix() {
         m_lagm.pad_was = 0.0;
         m_lagm.boost_now = 0.0;
         m_lagm.brake_now = false;
+        m_lagm.move_dir.reset();
+        m_lagm.stop_dir.reset();
+        m_lagm.brake_active = false;
         return;
     }
 
@@ -3949,6 +3952,19 @@ void RE4VRMovement::apply_lag_fix() {
     } else if (pad < 0.15 && m_lagm.pad_was >= 0.15) {
         m_lagm.edge_t = now;
         m_lagm.edge_kind = 2;   // STOP
+        // [BREMSE_RICHTUNG 2026-09-30] Gebremst wird nur entlang der Richtung,
+        // in die er zuletzt gelaufen ist.
+        m_lagm.stop_dir = m_lagm.move_dir;
+        m_lagm.brake_active = m_lagm.stop_dir.has_value();
+    }
+
+    // [BREMSE_RICHTUNG 2026-09-30] Neue Eingabe beendet die Bremse endgueltig.
+    if (pad >= 0.15) {
+        m_lagm.brake_active = false;
+
+        if (m_lagm.spd > 0.2 && step > 1e-5) {
+            m_lagm.move_dir = glm::vec2{static_cast<float>(dx / step), static_cast<float>(dz / step)};
+        }
     }
 
     m_lagm.pad_was = pad;
@@ -3995,14 +4011,26 @@ void RE4VRMovement::apply_lag_fix() {
                     }
                 }
             }
-        } else if (m_cfg.lag_brake_on && m_lagm.edge_kind == 2 && pad < 0.15
-                   && since <= m_cfg.lag_brake_window && m_lagm.last_pos.has_value()
-                   && step > 0.0001) {
-            const double g = (std::min)((std::max)(m_cfg.lag_brake_gain, 0.0), 1.0);
-            set_vec3(btf, "set_Position",
-                     glm::vec3{static_cast<float>(m_lagm.last_pos->x + dx * g), cur.y,
-                               static_cast<float>(m_lagm.last_pos->z + dz * g)});
-            m_lagm.brake_now = true;
+        } else if (m_cfg.lag_brake_on && m_lagm.edge_kind == 2 && m_lagm.brake_active
+                   && pad < 0.15 && since <= m_cfg.lag_brake_window
+                   && m_lagm.last_pos.has_value() && m_lagm.stop_dir.has_value()) {
+            // [BREMSE_RICHTUNG 2026-09-30] Nur den Anteil entlang der alten
+            // Laufrichtung wegnehmen -- Roomscale, Schubsen, Seitwaertsanteile
+            // bleiben. Faellt der Auslauf unter 0,05 m/s, steht er: Bremse aus.
+            const double sx = m_lagm.stop_dir->x;
+            const double sz = m_lagm.stop_dir->y;
+            const double along = dx * sx + dz * sz;
+
+            if (along / dt < 0.05) {
+                m_lagm.brake_active = false;
+            } else {
+                const double g = (std::min)((std::max)(m_cfg.lag_brake_gain, 0.0), 1.0);
+                const double cut = along * (1.0 - g);
+                set_vec3(btf, "set_Position",
+                         glm::vec3{static_cast<float>(cur.x - sx * cut), cur.y,
+                                   static_cast<float>(cur.z - sz * cut)});
+                m_lagm.brake_now = true;
+            }
         }
     }
 

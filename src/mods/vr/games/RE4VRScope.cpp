@@ -24,6 +24,8 @@
 #include "RE4VR.hpp"
 #include "RE4VRScope.hpp"
 
+#include <imgui.h>
+
 #if defined(RE4)
 
 namespace {
@@ -299,6 +301,23 @@ std::optional<bool> read_bool_field(::REManagedObject* obj, const char* name) {
     } catch (...) {
         return std::nullopt;
     }
+}
+
+// [SCOPE_GLOBAL] Ein float-Feld lesen (Gegenstueck zu write_field_float).
+std::optional<float> read_float_field(void* obj, sdk::RETypeDefinition* obj_td, const char* name,
+                                      bool container_is_value) {
+    if (obj == nullptr || obj_td == nullptr) {
+        return std::nullopt;
+    }
+
+    auto* f = obj_td->get_field(name);
+    auto* raw = f != nullptr ? f->get_data_raw(obj, container_is_value) : nullptr;
+
+    if (raw == nullptr) {
+        return std::nullopt;
+    }
+
+    return *reinterpret_cast<float*>(raw);
 }
 
 // Ein float-Feld schreiben -- Luas sp:set_field("_FOVMin", v).
@@ -578,6 +597,19 @@ void RE4VRScope::load_config() {
         m_slider_range_pos = f["slider_range_pos"].get<double>();
     }
 
+    // [SCOPE_GLOBAL] globale Regler
+    if (f.contains("global_zoom") && f["global_zoom"].is_number()) {
+        m_global_zoom = f["global_zoom"].get<double>();
+    }
+
+    if (f.contains("global_zoom2") && f["global_zoom2"].is_number()) {
+        m_global_zoom2 = f["global_zoom2"].get<double>();
+    }
+
+    if (f.contains("global_pitch") && f["global_pitch"].is_number()) {
+        m_global_pitch = f["global_pitch"].get<double>();
+    }
+
     if (f.contains("slider_range_rot") && f["slider_range_rot"].is_number()) {
         m_slider_range_rot = f["slider_range_rot"].get<double>();
     }
@@ -700,6 +732,9 @@ void RE4VRScope::save_config() {
     out["weapons"] = weapons;
     out["slider_range_pos"] = m_slider_range_pos;
     out["slider_range_rot"] = m_slider_range_rot;
+    out["global_zoom"] = m_global_zoom;     // [SCOPE_GLOBAL]
+    out["global_zoom2"] = m_global_zoom2;
+    out["global_pitch"] = m_global_pitch;
     re4vr::json_save(get_config_path(), out);
 }
 
@@ -1349,11 +1384,90 @@ void RE4VRScope::apply_scope_fov_override(int32_t wid) {
     }
 }
 
+// [SCOPE_GLOBAL 30.09.2026] Zoom-Faktor auf den ScopeController der Waffe in der Hand. Belegt per
+// Sonde (zzz_re4_scope_fov_sonde, wid 4401): _FOVMax 43 = Blick beim Anlegen, _FOVMin 16 = Zoomstufe
+// (rechter Stick-Klick), die Kamera lerpt dazwischen; der Controller ist ein Referenzobjekt, das
+// Schreiben wirkt live. Die Originalwerte werden je Controller gemerkt -> kein Aufschaukeln;
+// Faktor 1 schreibt sie zurueck.
+void RE4VRScope::apply_global_zoom() {
+    auto* cm = re4vr::character_manager();
+    auto* ctx = cm != nullptr ? re4vr::call_safe<::REManagedObject*>(cm, "getPlayerContextRef") : nullptr;
+    auto* hu = ctx != nullptr ? re4vr::call_safe<::REManagedObject*>(ctx, "get_HeadUpdater") : nullptr;
+    auto* gun = hu != nullptr ? re4vr::call_safe<::REManagedObject*>(hu, "get_EquipWeapon") : nullptr;
+    auto* sctrl = gun != nullptr ? re4vr::call_safe<::REManagedObject*>(gun, "get_ScopeController") : nullptr;
+
+    if (sctrl == nullptr || !re4vr::obj_ok(sctrl)) {
+        return;
+    }
+
+    auto* td = utility::re_managed_object::get_type_definition(sctrl);
+
+    if (td == nullptr) {
+        return;
+    }
+
+    const auto key = reinterpret_cast<uintptr_t>(sctrl);
+    auto it = m_fov_native.find(key);
+
+    if (it == m_fov_native.end()) {
+        const auto mn = read_float_field(sctrl, td, "_FOVMin", false);
+        const auto mx = read_float_field(sctrl, td, "_FOVMax", false);
+
+        if (!mn.has_value() || !mx.has_value() || *mn <= 0.0f || *mx <= 0.0f) {
+            return;
+        }
+
+        it = m_fov_native.emplace(key, std::make_pair(*mn, *mx)).first;
+    }
+
+    const double f1 = (std::max)(0.1, m_global_zoom);    // Stufe 1 = _FOVMax
+    const double f2 = (std::max)(0.1, m_global_zoom2);   // Stufe 2 = _FOVMin
+    write_field_float(sctrl, td, "_FOVMax", static_cast<float>(it->second.second / f1), false);
+    write_field_float(sctrl, td, "_FOVMin", static_cast<float>(it->second.first / f2), false);
+}
+
+void RE4VRScope::draw_dev_ui() {
+    if (!ImGui::TreeNode("RE4VR - Scope")) {
+        return;
+    }
+
+    bool save = false;
+    float z = static_cast<float>(m_global_zoom);
+
+    // Faktor: 1 = Original, groesser = staerker vergroessert.
+    if (ImGui::SliderFloat("Scope Zoom 1", &z, 0.5f, 3.0f, "%.2fx")) {
+        m_global_zoom = z;
+        save = true;
+    }
+
+    float z2 = static_cast<float>(m_global_zoom2);
+
+    if (ImGui::SliderFloat("Scope Zoom 2", &z2, 0.5f, 3.0f, "%.2fx")) {
+        m_global_zoom2 = z2;
+        save = true;
+    }
+
+    float p = static_cast<float>(m_global_pitch);
+
+    if (ImGui::SliderFloat("Scope Pitch", &p, -10.0f, 10.0f, "%.2f")) {
+        m_global_pitch = p;
+        save = true;
+    }
+
+    if (save) {
+        save_config();
+    }
+
+    ImGui::TreePop();
+}
+
 // Lua Z.562-605.
 void RE4VRScope::apply_scope_cam_offset(int32_t wid) {
+    // [SCOPE_GLOBAL] globaler Pitch fuer alle Scope-Waffen, zusaetzlich zum Wert je Waffe.
+    const double pitch = m_scope_cam_rot.pitch + m_global_pitch;
+
     if (m_scope_cam_pos.x == 0.0 && m_scope_cam_pos.y == 0.0 && m_scope_cam_pos.z == 0.0
-        && m_scope_cam_rot.yaw == 0.0 && m_scope_cam_rot.pitch == 0.0
-        && m_scope_cam_rot.roll == 0.0) {
+        && m_scope_cam_rot.yaw == 0.0 && pitch == 0.0 && m_scope_cam_rot.roll == 0.0) {
         return;
     }
 
@@ -1375,13 +1489,11 @@ void RE4VRScope::apply_scope_cam_offset(int32_t wid) {
         }
     }
 
-    if (m_scope_cam_rot.yaw != 0.0 || m_scope_cam_rot.pitch != 0.0
-        || m_scope_cam_rot.roll != 0.0) {
+    if (m_scope_cam_rot.yaw != 0.0 || pitch != 0.0 || m_scope_cam_rot.roll != 0.0) {
         glm::quat cur{1.0f, 0.0f, 0.0f, 0.0f};
 
         if (get_quat(sc_tf, "get_LocalRotation", cur)) {
-            const auto o = quat_from_ypr(m_scope_cam_rot.yaw, m_scope_cam_rot.pitch,
-                                         m_scope_cam_rot.roll);
+            const auto o = quat_from_ypr(m_scope_cam_rot.yaw, pitch, m_scope_cam_rot.roll);
             set_quat(sc_tf, "set_LocalRotation", mul_onto(o, cur));
         }
     }
@@ -1754,6 +1866,10 @@ void RE4VRScope::on_pre_application_entry(void* entry, const char* name, size_t 
         }
 
         m_is_zoomed = is_scope_zoomed();
+        // [SCOPE_GLOBAL] nur bei aktivem Scope (m_is_zoomed = ScopeController._IsActive), nie Ironsight.
+        if (m_is_zoomed) {
+            apply_global_zoom();
+        }
 
         // Lua Z.851: `if zoomed and wid then` -- geprueft wird NUR auf eine
         // vorhandene Waffen-ID, NICHT erneut auf SCOPE_WEAPONS.

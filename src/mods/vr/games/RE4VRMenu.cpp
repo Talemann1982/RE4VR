@@ -33,6 +33,7 @@
 #include "RE4VRMovement.hpp"
 #include "RE4VRRecoil.hpp"
 #include "RE4VRReload.hpp"
+#include "RE4VRScope.hpp"
 #include "RE4VRUi.hpp"
 #include "RE4VRWeapons.hpp"
 #include "RE4VRWeapons2.hpp"
@@ -899,7 +900,7 @@ void RE4VRMenu::draw_dev() {
         std::function<void()> draw;
     };
 
-    std::array<Entry, 25> entries{{
+    std::array<Entry, 26> entries{{
         {"Arm Chain",            [] { RE4VRArmChain::get()->draw_dev_ui(); }},
         {"Binding",              [] { RE4VRBinding::get()->draw_dev_ui(); }},
         {"Choke",                [] { RE4VRChoke::get()->draw_dev_ui(); }},
@@ -923,6 +924,7 @@ void RE4VRMenu::draw_dev() {
         {"Reload3",              [] { RE4VRReload::get()->draw_dev_r3(); }},
         {"Reload4 (Separate Ways)",  [] { RE4VRReload::get()->draw_dev_r4(); }},
         {"Reload 5 (Separate Ways)", [] { RE4VRReload::get()->draw_dev_r5(); }},
+        {"Scope",                [] { RE4VRScope::get()->draw_dev_ui(); }},   // [SCOPE_GLOBAL 30.09.]
         {"UI",                   [] { RE4VRUi::get()->draw_dev_ui(); }},
         {"Weapons",              [] { RE4VRWeapons::get()->draw_dev_ui(); }},
     }};

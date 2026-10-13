@@ -3741,8 +3741,9 @@ void RE4VR::on_lua_state_created(sol::state& lua) {
         return re4vr::fc::managed_singleton(name.c_str());
     };
 
-    // [VIGEM 2026-09-04] Einmal beim Start melden, ob der ViGEmBus-Treiber
-    // erreichbar ist. Legt KEIN Pad an (probe verbindet nur). Der native
+    // [VIGEM 2026-09-04] Einmal beim Start melden, ob die Pad-Schicht da ist
+    // ([XINPUT_PAD 30.09.]: unsere xinput1_4.dll statt ViGEmBus). Legt KEIN
+    // Pad an. Der native
     // binding-Port braucht diese Schicht; ohne Treiber bliebe er wirkungslos,
     // und dann soll das hier stehen statt es im Spiel zu suchen.
     lua["__re4_vigem_ready"] = VigemPad::probe();

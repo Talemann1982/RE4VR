@@ -102,6 +102,10 @@ std::string VR::actions_json = R"(
       "type": "boolean"
     },
     {
+      "name": "/actions/default/in/Frame_Menu",
+      "type": "boolean"
+    },
+    {
       "name": "/actions/default/in/WeaponDial_Start",
       "type": "boolean"
     },
@@ -1101,7 +1105,7 @@ std::string VR::bindings_frame_controller = R"(
             {
                "inputs": {
                   "click": {
-                     "output": "/actions/default/in/systembutton"
+                     "output": "/actions/default/in/frame_menu"
                   }
                },
                "mode": "button",
@@ -1110,7 +1114,7 @@ std::string VR::bindings_frame_controller = R"(
             {
                "inputs": {
                   "click": {
-                     "output": "/actions/default/in/systembutton"
+                     "output": "/actions/default/in/frame_menu"
                   }
                },
                "mode": "button",

@@ -140,18 +140,6 @@ FetchContent_Declare(kananlib
 )
 FetchContent_MakeAvailable(kananlib)
 
-# ViGEm -- virtuelles Xbox-360-Pad. Bisher lag das ausschliesslich im Plugin
-# re_vr.dll und war nur ueber die Lua-Tabelle `vigem` erreichbar; damit war
-# re4_vr_binding.lua nicht nach C++ portierbar (jeder Pad-Schreibzugriff waere
-# ein Lua-Aufruf mit ScriptRunner-Sperre gewesen). Jetzt nativ im Fork.
-message(STATUS "Fetching ViGEmClient (1.21.222.0)...")
-FetchContent_Declare(ViGEmClient
-	GIT_REPOSITORY
-		"https://github.com/nefarius/ViGEmClient"
-	GIT_TAG
-		b66d02d57e32cc8595369c53418b843e958649b4
-)
-FetchContent_MakeAvailable(ViGEmClient)
 
 # Target: pdperfmod
 if(REF_BUILD_DEPENDENCIES AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework-dependencies
@@ -2395,7 +2383,6 @@ if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 		glm_static
 		shlwapi
 		openvr
-		ViGEmClient
 		setupapi
 		openxr_loader
 		delayimp
@@ -2672,7 +2659,6 @@ if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 		glm_static
 		shlwapi
 		openvr
-		ViGEmClient
 		setupapi
 		openxr_loader
 		delayimp
@@ -4642,7 +4628,6 @@ if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 		glm_static
 		shlwapi
 		openvr
-		ViGEmClient
 		setupapi
 		openxr_loader
 		delayimp
@@ -4919,7 +4904,6 @@ if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 		glm_static
 		shlwapi
 		openvr
-		ViGEmClient
 		setupapi
 		openxr_loader
 		delayimp
@@ -5203,7 +5187,6 @@ if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 		glm_static
 		shlwapi
 		openvr
-		ViGEmClient
 		setupapi
 		openxr_loader
 		delayimp
@@ -8021,7 +8004,6 @@ if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 		glm_static
 		shlwapi
 		openvr
-		ViGEmClient
 		setupapi
 		openxr_loader
 		delayimp
@@ -8298,7 +8280,6 @@ if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 		glm_static
 		shlwapi
 		openvr
-		ViGEmClient
 		setupapi
 		openxr_loader
 		delayimp
@@ -9423,7 +9404,6 @@ if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 		glm_static
 		shlwapi
 		openvr
-		ViGEmClient
 		setupapi
 		openxr_loader
 		delayimp
@@ -10546,7 +10526,6 @@ if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 		glm_static
 		shlwapi
 		openvr
-		ViGEmClient
 		setupapi
 		openxr_loader
 		delayimp
@@ -11671,7 +11650,6 @@ if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 		glm_static
 		shlwapi
 		openvr
-		ViGEmClient
 		setupapi
 		openxr_loader
 		delayimp
@@ -12796,7 +12774,6 @@ if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 		glm_static
 		shlwapi
 		openvr
-		ViGEmClient
 		setupapi
 		openxr_loader
 		delayimp
@@ -13921,7 +13898,6 @@ if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 		glm_static
 		shlwapi
 		openvr
-		ViGEmClient
 		setupapi
 		openxr_loader
 		delayimp
@@ -15046,7 +15022,6 @@ if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 		glm_static
 		shlwapi
 		openvr
-		ViGEmClient
 		setupapi
 		openxr_loader
 		delayimp

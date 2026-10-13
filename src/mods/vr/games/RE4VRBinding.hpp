@@ -17,9 +17,9 @@
 //
 // Die Lua stieg in Zeile 34 aus, wenn `vigem` fehlte, und in Zeile 54, wenn der
 // killswitch-require scheiterte. Beide Wege entfallen; dafuer haengt jetzt alles
-// an VigemPad::init(). Schlaegt das fehl (kein ViGEmBus-Treiber), geht kein
-// einziger Knopf raus -- deshalb meldet VigemPad::probe() den Treiberzustand
-// beim Start in __re4_vigem_ready.
+// an VigemPad::init(). Schlaegt das fehl (seit 30.09. [XINPUT_PAD]: unsere
+// xinput1_4.dll fehlt im Spielordner), geht kein einziger Knopf raus --
+// deshalb meldet VigemPad::probe() das beim Start in __re4_vigem_ready.
 //
 // ----------------------------------------------------------------------------
 // AUFBAU
@@ -300,6 +300,7 @@ private:
     };
 
     Edge m_edge_r_a{}, m_edge_r_b{}, m_edge_r_jc{}, m_edge_l_a_b{};
+    bool m_frame_menu_was{false};   // [STEAM_FRAME 2026-09-30] View/Menu -> Start (OpenVR)
     bool edge_detect(Edge& e, bool pressed);
 
     // ------------------------------------------------------------------

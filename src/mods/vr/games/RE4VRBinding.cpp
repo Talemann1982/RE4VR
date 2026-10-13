@@ -1947,6 +1947,19 @@ void RE4VRBinding::on_frame() {
         rt->handle_pause = false;
     }
 
+    // [STEAM_FRAME 2026-09-30] Frame View/Menu unter OpenVR -> Start. Die
+    // Aktion ist nur im Frame-Profil belegt (unter OpenXR laufen beide Tasten
+    // ueber systembutton -> handle_pause), sonst immer aus.
+    {
+        const bool frame_menu = digital_raw(vr->get_action_frame_menu(), lh) || digital_raw(vr->get_action_frame_menu(), rh);
+
+        if (frame_menu && !m_frame_menu_was && !vr->is_menu_input_blocked()) {
+            handle_pause = true;
+        }
+
+        m_frame_menu_was = frame_menu;
+    }
+
     // --- Wiederverwendete Teilstuecke ------------------------------------
 
     // DPAD-Shift: L.Trigger gehalten + R-Stick -> DPAD; sonst die echten
@@ -2084,7 +2097,9 @@ void RE4VRBinding::on_frame() {
         // l_trigger/l_bbutton nichts mehr (VR::is_menu_input_blocked), die Kombi
         // muss das Menue aber auch wieder schliessen. Die Flanke unten bleibt
         // dadurch auch beim Halten ueber das Schliessen hinweg richtig.
-        const bool combo = digital_raw(act_dial, lh) && digital_raw(act_b, lh);
+        // [STEAM_FRAME 2026-09-30] Frame: LT + rechtes Y (Frame_LeftB) ebenso.
+        const bool combo = digital_raw(act_dial, lh)
+            && (digital_raw(act_b, lh) || digital_raw(vr->get_action_frame_left_b(), rh));
 
         if (combo && !m_lt_b_overlay_was) {
             // [REF_UI 2026-08-14] Dieselbe Kombi macht ZWEI Dinge: das Menue
@@ -3306,9 +3321,8 @@ void RE4VRBinding::apply_frame(Frame& f) {
         }
     };
 
-    // [SLOT-FIX 08.09.2026] Einmalig unser Pad identifizieren und XInput
-    // umlenken, falls es nicht auf Slot 0 sitzt (s. VigemPad.cpp).
-    pad.tick_slot_fix();
+    // [XINPUT_PAD 30.09.2026] Slot-Fix entfaellt: unser Pad IST Slot 0
+    // (xinput1_4.dll im Spielordner, s. VigemPad.cpp).
 
     // [MESSPUNKT] Beweis, dass der Pad-Export in diesem Frame ueberhaupt laeuft.
     re4vr::lua_set_number("__re4_apply_frame_t", clock_now());

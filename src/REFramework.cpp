@@ -2186,7 +2186,12 @@ void REFramework::run_vr_menu_frame() {
     const auto ls = vr->get_left_stick_axis_raw();
     const auto rs = vr->get_right_stick_axis_raw();
     const bool r_a = vr->is_action_active_raw(vr->get_action_a_button(), vr->get_right_joystick());
-    const bool l_a = vr->is_action_active_raw(vr->get_action_a_button(), vr->get_left_joystick());
+    // [STEAM_FRAME 30.09.2026] Tester: mit dem Frame im Menue kein "zurueck". Das linke A gibt es dort
+    // nicht, es liegt auf dem rechten B (Frame_LeftA, wie RE4VRBinding) -- als ODER dazu.
+    const auto frame_la = vr->get_action_frame_left_a();
+    const bool l_a = vr->is_action_active_raw(vr->get_action_a_button(), vr->get_left_joystick())
+                     || (frame_la != vr::k_ulInvalidActionHandle
+                         && vr->is_action_active_raw(frame_la, vr->get_right_joystick()));
 
     // [SLIDER FESTHALTEN 11.09.2026] Mit rechtem A aktivierter Slider: solange er aktiv
     // ist, holt NICHTS ausser linkem A aus dem Verstellen heraus -- kein Stick hoch/runter,
@@ -3044,6 +3049,12 @@ void REFramework::draw_menu_detail() {
             if (VR::get()->draw_resolution_scale_slider()) {
                 request_save_config();
             }
+
+            // [SYNC_MODE_CFG 30.09.2026] Sync Mode direkt unter die Aufloesung.
+            VR::get()->draw_sync_mode_combo();
+
+            // [USER_MONO 01.10.2026] Mono-Toggle direkt unter die XR-Einstellungen.
+            VR::get()->draw_user_mono_toggle();
 
             // [ALLGEMEINE REGLER 28.09.2026 -- Ansage des Users] Sharpness und
             // Saturation gelten in jedem Zustand -> direkt unter die Aufloesung.

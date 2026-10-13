@@ -341,15 +341,17 @@ void RE4VRUi::mono_apply() {
         return;
     }
 
-    const bool want = !m_mono_reqs.empty();
-
-    if (want == m_mono_state) {
-        return;
-    }
-
     auto* vr = VR::get().get();
 
     if (vr == nullptr) {
+        return;
+    }
+
+    // [USER_MONO 01.10.2026] Der Toggle "Enable Mono Rendering" zaehlt wie eine
+    // weitere Anmeldung: Karte/Raetsel melden sich an und ab, Mono bleibt trotzdem an.
+    const bool want = !m_mono_reqs.empty() || vr->is_user_mono();
+
+    if (want == m_mono_state) {
         return;
     }
 
@@ -1059,9 +1061,11 @@ void RE4VRUi::cutscene_2d_tick() {
 
     m_cut2d_active = want;
 
-    // [CUT2D_MULTIPASS 29.09.2026 -- Ansage des Users] Leinwand an -> Multipass, aus -> zurueck.
+    // [CUT2D_AFW 02.10.2026] Umkehrung von [CUT2D_MULTIPASS]: Multipass -> AFW fuer die
+    // Leinwand (im Multipass fehlen die Koepfe), aus -> zurueck. Den AFW-Rahmen schwaerzt
+    // D3D12Component.
     if (auto* vr = VR::get().get(); vr != nullptr) {
-        vr->set_cutscene_multipass(want);
+        vr->set_cutscene_afw(want);
     }
 
     m_cut2d_kick_at = want ? clock_now() + 0.3 : 0.0;

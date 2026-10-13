@@ -6,10 +6,11 @@
 //             dazu Wegdruecken nach Eindringtiefe; eine Feder zieht den Kopf
 //             zurueck in die Animation. Geschrieben NACH der Animation
 //             (UpdateJointExpression + BeginRendering pre, wie der Lipsync).
-//   * Stoff:  GPUClothCharacter._HandCapsule auf die naehere Hand + Wind.
-//   * Ketten: via.motion.Chain -- Stoesse auf Knoten in Handnaehe.
-// Strands (Straehnen-Haar) gibt es bei Ashley nicht (Dump 19.09.) -- der
-// Haar-Teil des Lua-Originals ist deshalb nicht portiert.
+//   * Ton:    Klatscher beim Kopftreffer, danach ein Spruch von Ashley.
+// [JIGGLE RAUS 02.10.2026] Stoff (GPUClothCharacter/GpuCloth), Ketten
+// (via.motion.Chain) und Wind sind entfernt: die gemerkten Komponenten hingen
+// an Kind-Objekten (z.B. Ashleys Lampe beim Raetsel) -- abgestellt = Objekt
+// weg, Zeiger blieb -> AV in getGroupCount (Tester-Dump 02.10.).
 //
 // Bonus des dritten Achievements ("LOTS OF MOVEMENT"). Die Bedingung dafuer
 // steht noch nicht fest -- bis dahin gilt es als freigeschaltet (Ansage).
@@ -45,22 +46,7 @@ public:
 private:
     struct Cfg {
         bool enabled{true};
-        bool drive_cloth{true};
-        bool drive_chain{true};
-        bool drive_wind{true};
         bool drive_head{true};
-
-        float cloth_radius{0.07f};
-        float chain_radius{0.10f};
-        float hand_capsule_len{0.06f};
-        float contact_spring{2.8f};
-        float contact_damping{1.6f};
-        float contact_friction{0.35f};
-        float chain_impulse_max{0.22f};
-        float wind_strength{6.0f};
-        float wind_range{0.45f};
-        float poke_range{0.28f};
-        float active_range{0.60f};
 
         // Kopf -- Werte vom User eingestellt (19.09.2026, Screenshot slap.png).
         float head_radius{0.14f};
@@ -87,18 +73,9 @@ private:
         float slap_gain_db{0.0f};     // ZUSCHLAG auf den globalen dB-Regler, nur Klatscher
     } cfg{};
 
-    struct SoftJoint {
-        std::string name{};
-        ::REManagedObject* joint{nullptr};
-    };
-
     // ---- Ashley --------------------------------------------------------
     ::REManagedObject* m_body{nullptr};
     uintptr_t m_body_addr{0};
-    ::REManagedObject* m_cloth_mgr{nullptr};
-    std::vector<::REManagedObject*> m_gpu_cloths{};
-    std::vector<::REManagedObject*> m_chains{};
-    std::vector<SoftJoint> m_soft{};
     ::REManagedObject* m_head_j{nullptr};
     ::REManagedObject* m_neck_j{nullptr};
 
@@ -108,19 +85,6 @@ private:
     ::REManagedObject* resolve_body();
     void discover(::REManagedObject* body);
     void drop_all();
-
-    // ---- Stoff / Ketten / Wind (LateUpdateBehavior) -----------------------
-    std::optional<glm::vec3> m_prev_lh{}, m_prev_rh{};
-    float m_dist{-1.0f};
-    bool m_contact_cloth{false};
-    bool m_contact_chain{false};
-    bool m_wind_zeroed{true};
-
-    void tick_body();
-    void drive_cloth(const glm::vec3& hand);
-    void drive_wind(const glm::vec3& hand, const glm::vec3& soft, const glm::vec3& vel);
-    void drive_chain(const std::optional<glm::vec3>& lh, const std::optional<glm::vec3>& rh);
-    void zero_wind();
 
     // ---- Kopf (UpdateJointExpression + BeginRendering pre) ----------------
     glm::vec3 m_th{0.0f};   // Neigung als Achse*Winkel (Welt)

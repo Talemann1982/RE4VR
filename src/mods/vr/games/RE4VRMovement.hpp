@@ -380,6 +380,11 @@ private:
         int edge_kind{0};     // 0 = keine, 1 = START, 2 = STOP
         double boost_now{0.0};
         bool brake_now{false};
+        // [BREMSE_RICHTUNG 2026-09-30] Letzte Laufrichtung (XZ, normiert) und
+        // ob die Bremse fuer die aktuelle Stopp-Flanke noch laeuft.
+        std::optional<glm::vec2> move_dir{};
+        std::optional<glm::vec2> stop_dir{};
+        bool brake_active{false};
     };
     Lagm m_lagm{};
 

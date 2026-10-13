@@ -1497,6 +1497,10 @@ void VR::on_lua_state_created(sol::state& lua) {
 std::optional<std::string> VR::initialize_openvr() {
     m_openvr = std::make_shared<runtimes::OpenVR>();
     m_openvr->loaded = false;
+    apply_sync_mode(); // [SYNC_MODE_CFG]
+    if (is_using_afw()) {
+        m_openvr->custom_stage = VRRuntime::SynchronizeStage::VERY_LATE;
+    }
 
     if (utility::load_module_from_current_directory(L"openvr_api.dll") == nullptr) {
         spdlog::info("[VR] Could not load openvr_api.dll");
@@ -1636,6 +1640,10 @@ std::optional<std::string> VR::initialize_openvr_input() {
 
 std::optional<std::string> VR::initialize_openxr() {
     m_openxr = std::make_shared<runtimes::OpenXR>();
+    apply_sync_mode(); // [SYNC_MODE_CFG]
+    if (is_using_afw()) {
+        m_openxr->custom_stage = VRRuntime::SynchronizeStage::VERY_LATE;
+    }
 
     spdlog::info("[VR] Initializing OpenXR");
 
@@ -5468,6 +5476,30 @@ bool VR::draw_recenter_button() {
 // Live slider + "Set" button: writing the value alone does nothing, the OpenXR swapchains have to
 // be rebuilt with it, which is what on_config_load does at startup. "Set" does exactly that now,
 // and the value is saved either way, so it also survives into the next start.
+// [SYNC_MODE_CFG 30.09.2026] Kopie des "Sync Mode" aus dem versteckten VR-Baum, gleicher Wert.
+void VR::draw_sync_mode_combo() {
+    if (get_runtime() == nullptr || !get_runtime()->loaded) {
+        return;
+    }
+
+    if (ImGui::Combo("Sync Mode##top", (int*)&get_runtime()->custom_stage, "Early\0Late\0Very Late\0")) {
+        m_sync_mode->value() = (int32_t)get_runtime()->custom_stage + 1;
+        apply_sync_mode();
+        g_framework->request_save_config();
+    }
+}
+
+// [USER_MONO 01.10.2026] Toggle im Stil der Menue-Toggles, gespeichert in der Config.
+void VR::draw_user_mono_toggle() {
+    g_framework->push_menu_toggle_style();
+    const bool changed = m_user_mono->draw("Enable Mono Rendering");
+    g_framework->pop_menu_toggle_style();
+
+    if (changed) {
+        g_framework->request_save_config();
+    }
+}
+
 bool VR::draw_resolution_scale_slider() {
     if (get_runtime() == nullptr || !get_runtime()->loaded || !get_runtime()->is_openxr()) {
         return false;
@@ -5563,7 +5595,12 @@ void VR::on_draw_ui() {
         }
     }
     
-    ImGui::Combo("Sync Mode", (int*)&get_runtime()->custom_stage, "Early\0Late\0Very Late\0");
+    if (ImGui::Combo("Sync Mode", (int*)&get_runtime()->custom_stage, "Early\0Late\0Very Late\0")) {
+        // [SYNC_MODE_CFG] Auswahl als 1..3 speichern
+        m_sync_mode->value() = (int32_t)get_runtime()->custom_stage + 1;
+        apply_sync_mode();
+        g_framework->request_save_config();
+    }
     ImGui::Separator();
 
     if (ImGui::Button("Set Standing Height")) {
@@ -5790,6 +5827,8 @@ void VR::on_config_load(const utility::Config& cfg) {
         initialize_openxr_swapchains();
     }
 
+    apply_sync_mode(); // [SYNC_MODE_CFG] vor dem AFW-Zwang
+
     if (is_using_afw()) {
         get_runtime()->custom_stage = VRRuntime::SynchronizeStage::VERY_LATE;
     }
@@ -5800,13 +5839,13 @@ void VR::on_config_load(const utility::Config& cfg) {
 }
 
 void VR::on_config_save(utility::Config& cfg) {
-    // [CUT2D_MULTIPASS] Waehrend der Cutscene die VORHERIGE Technik speichern, nicht Multipass.
+    // [CUT2D_AFW] Waehrend der Cutscene die Technik des Users speichern, nicht das AFW.
     int32_t& technique = m_rendering_technique->value();
     const int32_t live_technique = technique;
-    const bool swap = m_cut2d_mp_saved.has_value() && technique == MULTIPASS;
+    const bool swap = m_cut2d_saved.has_value() && technique == ALTERNATE_FRAME_WARPING;
 
     if (swap) {
-        technique = *m_cut2d_mp_saved;
+        technique = *m_cut2d_saved;
     }
 
     for (IModValue& option : m_options) {

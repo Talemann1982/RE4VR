@@ -38,6 +38,9 @@ public:
 
     void on_pre_application_entry(void* entry, const char* name, size_t hash) override;
 
+    // [SCOPE_GLOBAL 30.09.2026] Entwickler-Baum "RE4VR - Scope" (RE4VRMenu::draw_dev).
+    void draw_dev_ui();
+
 private:
     // ---- Konfiguration (Lua Z.50-114) ------------------------------------
     struct Vec3Cfg {
@@ -132,6 +135,16 @@ private:
     double  m_scope_lerp_t{0.0};
     double  m_slider_range_pos{1.0};
     double  m_slider_range_rot{180.0};
+
+    // [SCOPE_GLOBAL 30.09.2026] Drei Regler fuer ALLE Scope-Waffen, NUR bei aktivem Scope (Ansage
+    // User; Yaw bleibt 0). Zoom 1 = Faktor auf _FOVMax (Anlegen), Zoom 2 = Faktor auf _FOVMin
+    // (Stick-Klick) -- Sonde 30.09. Stingray 4401: 43 / 16, live im Referenzobjekt. Pitch: Grad,
+    // auf die Scope-Kamera-Neigung addiert.
+    double m_global_zoom{1.0};
+    double m_global_zoom2{1.0};
+    double m_global_pitch{0.0};
+    std::map<uintptr_t, std::pair<float, float>> m_fov_native{};   // ScopeController -> (min, max) original
+    void apply_global_zoom();
 
     // [L7] body_children haelt GameObjects ueber die GANZE Scope-Phase --
     // find_body_children laeuft nur auf der steigenden Flanke.

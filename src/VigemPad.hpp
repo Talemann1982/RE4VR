@@ -1,5 +1,10 @@
 // ============================================================================
-// VigemPad -- virtuelles Xbox-360-Pad ueber ViGEm, nativ im Fork.
+// VigemPad -- virtuelles Xbox-360-Pad, nativ im Fork.
+//
+// [XINPUT_PAD 30.09.2026] KEIN ViGEm mehr: der Report geht an unsere
+// xinput1_4.dll im Spielordner (Quelle I:\LUATRANS\re4vr_xinput), die ihn dem
+// Spiel als Slot 0 liefert. Kein Treiber, kein Slot-Fix. Name und Schnittstelle
+// der Klasse bleiben, damit kein Aufrufer angefasst werden muss.
 //
 // HERKUNFT: Diese Schicht lag bisher ausschliesslich im Plugin
 // `reframework/plugins/re_vr.dll` (dort `re_vr.cpp`, Lua-Tabelle `vigem`).
@@ -46,23 +51,15 @@ class VigemPad {
 public:
     static VigemPad& get();
 
-    // Legt Client und Target an. Mehrfachaufrufe sind unschaedlich (idempotent).
-    // Liefert false, wenn der ViGEmBus-Treiber fehlt -- dann bleibt alles
-    // Weitere wirkungslos, genau wie im Plugin.
+    // [XINPUT_PAD 30.09.2026] Meldet das Pad bei unserer xinput1_4.dll an
+    // (Slot 0 = VR-Pad). Mehrfachaufrufe sind unschaedlich (idempotent).
+    // Liefert false, wenn die DLL im Spielordner fehlt -- dann bleibt alles
+    // Weitere wirkungslos, genau wie frueher ohne ViGEmBus-Treiber.
     bool init();
     void shutdown();
 
-    // [SLOT-FIX 08.09.2026] Einmalig: unser virtuelles Pad per Fingerabdruck
-    // eindeutig identifizieren und, falls es NICHT auf Slot 0 sitzt,
-    // XInputGetState so umlenken, dass das Spiel auf Index 0 unsere Daten
-    // bekommt. Pro Frame aufrufen; macht nach Abschluss nichts mehr.
-    void tick_slot_fix();
-
-    // Prueft NUR, ob der ViGEmBus-Treiber erreichbar ist -- verbindet und
-    // trennt wieder, legt KEIN Target an und erzeugt damit auch kein zweites
-    // Pad. Dient der Startdiagnose und stellt zugleich sicher, dass die
-    // ViGEmClient-Anbindung wirklich gelinkt ist (ohne einen echten Nutzer
-    // wirft der Linker den Code sonst weg).
+    // [XINPUT_PAD] Prueft NUR, ob unsere xinput1_4.dll geladen ist
+    // (frueher: ViGEmBus erreichbar). Dient der Startdiagnose.
     static bool probe();
 
     bool ready() const { return m_ready.load(); }
@@ -80,8 +77,8 @@ public:
     // auch wenn set_axis sie vorher gesetzt hat.
     void block_axis(std::string_view axis, bool enabled);
 
-    // Vom ViGEm-Callback gerufen (freier Thread) -- deshalb oeffentlich und
-    // ueber Atomics, nicht ueber den Mutex.
+    // [XINPUT_PAD] Bei jedem Senden mit der Vibration gerufen, die das Spiel an
+    // Slot 0 geschickt hat (frueher der ViGEm-Callback) -- ueber Atomics.
     // ACHTUNG: die Parameter heissen NICHT large/small -- `small` ist ein
     // MAKRO aus windows.h (rpcndr.h: #define small char), genau wie `far`
     // und min/max. Als Parametername zerlegt es die Signatur.
@@ -104,15 +101,8 @@ private:
     std::mutex m_mtx{};
     std::atomic<bool> m_ready{false};
 
-    // Undurchsichtige ViGEm-Handles -- die Header bleiben in der .cpp, damit
-    // sich <ViGEm/Client.h> (zieht windows.h nach) nicht durch den Baum zieht.
-    void* m_client{nullptr};
-    void* m_target{nullptr};
-
-    // [SLOT-FIX] Zustand der einmaligen Identifikation.
-    int m_fix_phase{0};
-    unsigned long long m_fix_t{0};
-    bool m_fp_active{false};   // solange true, sendet NUR der Fingerabdruck
+    // Pad-Report (Layout XINPUT_GAMEPAD), undurchsichtig, damit windows.h in
+    // der .cpp bleibt.
     void* m_report{nullptr};
 
     bool m_lock_lx{false};

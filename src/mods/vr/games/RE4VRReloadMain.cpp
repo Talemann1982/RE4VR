@@ -8716,6 +8716,15 @@ struct FinderIds {
 void RE4VRReloadMain::draw_public_shotgun_ratio() {
     const int32_t awid = m_wep.wid.value_or(get_equip_wid().value_or(0));
 
+    // [SHRATIO_NUR_SHOTGUN 30.09.2026 -- Ansage des Users] Der Wert gilt pro
+    // Waffe und laesst sich nur mit der Shotgun in der Hand setzen -> Block nur
+    // zeichnen, wenn eine Shotgun ausgeruestet ist. 6100 = Adas Sawed-off (DLC,
+    // laeuft ueber Reload4, liest aber diese Liste) -- NICHT in is_shotgun, das
+    // steuert die Ladelogik von ReloadMain.
+    if (!is_shotgun(awid) && awid != 6100) {
+        return;
+    }
+
     g_framework->draw_menu_heading("Shotgun Shell Ratio", true);   // [UEBERSCHRIFT 11.09.2026] war orangerot, linksbuendig
 
     const int32_t eff = shotgun_ratio_get(awid);
