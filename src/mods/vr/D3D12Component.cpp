@@ -559,7 +559,45 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         if (runtime->is_openvr()) {
             if (is_multipass) {
                 if (vr->m_multipass.eye_textures[0].Get() != nullptr && vr->m_multipass.eye_textures[1].Get() != nullptr) {
-                    if (!TemporalUpscaler::get()->ready()) {
+                    // [HDR10_OPENVR 16.10.2026] AMD-Tester: Regenbogenfarben. RE4 legt dort die Swapchain als
+                    // R10G10B10A2 (Format 24) an, auch mit HDR aus (ResizeBuffers fordert selbst 24). Die OpenVR-
+                    // Augen sind 8 Bit (rt_desc) -> copy_left/right = CopyResource = Bitmuster 10:10:10:2 als
+                    // 8:8:8:8 gelesen. OpenXR-Zweig oben und Nicht-Multipass rechnen bei !m_backbuffer_is_8bit
+                    // schon per Shader um (render_srv_to_rtv), nur dieser Zweig nicht. Gleiches hier; der 8-Bit-Weg
+                    // darunter bleibt unveraendert.
+                    if (!m_backbuffer_is_8bit) {
+                        const auto src_state = TemporalUpscaler::get()->ready() ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_COPY_DEST;
+
+                        for (int i = 0; i < 2; ++i) {
+                            auto& src = vr->m_multipass.eye_contexts[i];
+                            auto* src_tex = vr->m_multipass.eye_textures[i].Get();
+
+                            if (src.texture.Get() != src_tex) {
+                                src.reset();
+                                const auto desc = src_tex->GetDesc();
+                                src.setup(device, src_tex, desc.Format, desc.Format);
+                            }
+
+                            auto& dst = i == 0 ? m_openvr.acquire_left() : m_openvr.acquire_right();
+                            auto* cmd = dst.commands.cmd_list.Get();
+
+                            D3D12_RESOURCE_BARRIER b{};
+                            b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                            b.Transition.pResource = src_tex;
+                            b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                            b.Transition.StateBefore = src_state;
+                            b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+                            cmd->ResourceBarrier(1, &b);
+
+                            const float clear_color[4]{0.0f, 0.0f, 0.0f, 0.0f};
+                            dst.commands.clear_rtv(dst, clear_color, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                            render_srv_to_rtv(cmd, src, dst, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+                            std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+                            cmd->ResourceBarrier(1, &b);
+                            dst.commands.execute();
+                        }
+                    } else if (!TemporalUpscaler::get()->ready()) {
                         m_openvr.copy_left(vr->m_multipass.eye_textures[0].Get(), D3D12_RESOURCE_STATE_COPY_DEST);
                         m_openvr.copy_right(vr->m_multipass.eye_textures[1].Get(), D3D12_RESOURCE_STATE_COPY_DEST);
                     } else {
