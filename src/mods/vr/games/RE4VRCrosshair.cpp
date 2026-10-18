@@ -2542,6 +2542,35 @@ bool RE4VRCrosshair::on_pre_gui_draw_element(REComponent* gui_element, void* pri
 // Bullet-Hooks (Lua Z.891-1010)
 // ============================================================================
 
+// [ROCKET-NPC 03.10.2026] Aus dem LUIS-FIX herausgezogen, damit Kugel- und
+// Raketen-Hook denselben NPC-Filter benutzen. Erster Character-Ancestor
+// entscheidet; keiner gefunden -> Unknown.
+RE4VRCrosshair::Owner RE4VRCrosshair::owner_of(::REManagedObject* component) {
+    if (component == nullptr) {
+        return Owner::Unknown;
+    }
+
+    auto* go = re4vr::call_safe<::REManagedObject*>(component, "get_GameObject");
+    auto* tf = (go != nullptr) ? re4vr::call_safe<::REManagedObject*>(go, "get_Transform") : nullptr;
+    int guard = 0;
+
+    while (tf != nullptr && guard < 16) {
+        ++guard;
+
+        auto* tgo = re4vr::call_safe<::REManagedObject*>(tf, "get_GameObject");
+        const std::string s = (tgo != nullptr) ? obj_name_of(tgo) : std::string{};
+
+        if (s.size() >= 2 && s[0] == 'c' && s[1] == 'h') {
+            const bool npc = (s.size() < 5) || (PLAYER_CH_PREFIX.count(s.substr(0, 5)) == 0);
+            return npc ? Owner::Npc : Owner::Player;
+        }
+
+        tf = re4vr::call_safe<::REManagedObject*>(tf, "get_Parent");
+    }
+
+    return Owner::Unknown;
+}
+
 void RE4VRCrosshair::hook_pre_request_fire(std::vector<uintptr_t>& args) {
     // [SCRIPTGATE] Riegel zu -> Original unveraendert laufen lassen,
     // als waere dieser Hook nie registriert worden.
@@ -2552,35 +2581,9 @@ void RE4VRCrosshair::hook_pre_request_fire(std::vector<uintptr_t>& args) {
     // NICHT als Spieler-Schuss werten: sonst zaehlt __vr_shot_seq hoch (Haptik/
     // Burst bei SEINEM Schuss) UND seine Kugel wird an DEINEN Muzzle umgelenkt.
     // Discriminator = der besitzende CHARACTER.
-    if (args.size() > 2) {
-        auto* gen = reinterpret_cast<::REManagedObject*>(args[1]);
-
-        if (gen != nullptr) {
-            auto* go = re4vr::call_safe<::REManagedObject*>(gen, "get_GameObject");
-            auto* tf = (go != nullptr)
-                           ? re4vr::call_safe<::REManagedObject*>(go, "get_Transform")
-                           : nullptr;
-            bool is_npc = false;
-            int guard = 0;
-
-            while (tf != nullptr && guard < 16) {
-                ++guard;
-
-                auto* tgo = re4vr::call_safe<::REManagedObject*>(tf, "get_GameObject");
-                const std::string s = (tgo != nullptr) ? obj_name_of(tgo) : std::string{};
-
-                if (s.size() >= 2 && s[0] == 'c' && s[1] == 'h') {
-                    is_npc = (s.size() < 5) || (PLAYER_CH_PREFIX.count(s.substr(0, 5)) == 0);
-                    break;   // erster Character-Ancestor entscheidet
-                }
-
-                tf = re4vr::call_safe<::REManagedObject*>(tf, "get_Parent");
-            }
-
-            if (is_npc) {
-                return;
-            }
-        }
+    if (args.size() > 2
+        && owner_of(reinterpret_cast<::REManagedObject*>(args[1])) == Owner::Npc) {
+        return;
     }
 
     // [BURST] Schuss-Zaehler -- auch wenn der Bullet-Hook aus ist.
@@ -2709,6 +2712,21 @@ void RE4VRCrosshair::hook_pre_rocket_generate(std::vector<uintptr_t>& args) {
     auto def = utility::re_managed_object::get_type_definition(owner);
 
     if (def == nullptr || def->get_full_name() != std::string{game_namespace("Gun")}) {
+        return;
+    }
+
+    // [ROCKET-NPC 03.10.2026] Gegner-Raketenwerfer laufen durch DIESELBE
+    // RocketLauncherShellGenerator-Klasse und reichen ebenfalls ein Gun-Objekt
+    // durch. Ohne diesen Filter wurde jede Gegner-Rakete an DEINEN VR-Muzzle
+    // gesetzt und zeigte in DEINE Zielrichtung -> Explosion sofort am Spieler.
+    // Gleicher Discriminator wie LUIS-FIX: erst der Generator, dann die Gun.
+    auto who = owner_of(reinterpret_cast<::REManagedObject*>(args[1]));
+
+    if (who == Owner::Unknown) {
+        who = owner_of(owner);
+    }
+
+    if (who == Owner::Npc) {
         return;
     }
 

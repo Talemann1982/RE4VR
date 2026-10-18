@@ -272,6 +272,12 @@ private:
     static const std::array<const char*, 7> CHARACTER_IDS;
     static const std::array<const char*, 8> PLAYER_BODY_NAMES;
     static const std::unordered_set<std::string> PLAYER_CH_PREFIX;
+
+    // [ROCKET-NPC 03.10.2026] Besitzender Character einer Komponente: von ihrem
+    // GameObject die Transform-Eltern hoch bis zum ersten "ch..."-Objekt.
+    enum class Owner { Unknown, Player, Npc };
+    static Owner owner_of(::REManagedObject* component);
+
     static const std::unordered_set<int32_t> NPC_SHARED_WEAPONS;
     static const std::unordered_set<int32_t> RETICLE_SHAPE_WEAPONS;
     static const std::array<std::pair<const char*, const char*>, 6> HUD_TARGETS;
