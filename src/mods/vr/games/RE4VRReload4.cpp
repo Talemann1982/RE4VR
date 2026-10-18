@@ -2697,6 +2697,14 @@ void RE4VRReload4::refresh_weapon() {
     m_wep.mag_joint = j;
     m_wep.slide_joint = slide_name.empty() ? nullptr : joint_by_name(tf, slide_name);
 
+    // [REST-PRO-WAFFE 11.10.2026] Ruhelage dieser Waffe zurueckholen (Reload-Main macht das seit
+    // 05.09. waffenuebergreifend; hier je WeaponId, damit keine fremde Ruhelage greift).
+    if (const auto rit = m_rest_store.find(*wid); rit != m_rest_store.end()) {
+        m_wep.rest_lp = rit->second.lp;
+        m_wep.rest_lr = rit->second.lr;
+        m_wep.chamber_off = rit->second.chamber_off;
+    }
+
     // [PUMP_GRIP] Den NAMEN nach aussen geben, damit motion den Vordergriff an
     // EXAKT dasselbe Joint haengt, das hier gepumpt wird. Nur der Name, kein
     // Objekt -- das ueberlebt keinen Savegame-Load.
@@ -3256,6 +3264,11 @@ void RE4VRReload4::capture_mag_rest() {
             const glm::vec3 cw = jw + (jr * glm::vec3{0.0f, 0.0f, *zoff});
             m_wep.chamber_off = glm::conjugate(gr) * (cw - gp);
         }
+    }
+
+    // [REST-PRO-WAFFE 11.10.2026] Fuer den naechsten Re-Resolve dieser Waffe merken.
+    if (m_wep.wid.has_value()) {
+        m_rest_store[*m_wep.wid] = RestPose{m_wep.rest_lp, m_wep.rest_lr, m_wep.chamber_off};
     }
 }
 

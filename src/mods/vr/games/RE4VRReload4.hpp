@@ -315,6 +315,17 @@ private:
         std::optional<glm::vec3> chamber_off{};     // [SHOTGUN CHAMBER] waffen-lokal
     } m_wep{};
 
+    // [REST-PRO-WAFFE 11.10.2026] Gemessene Mag-Ruhelage je WeaponId. m_wep wird bei jedem
+    // Re-Resolve (Waffenwechsel, Save-Load) neu gebaut; ohne diesen Speicher war die Ruhelage
+    // weg, waehrend m_mag_out pro Waffe zurueckkam -> capture_mag_rest misst bei draussen
+    // liegendem Mag nicht nach und start_mag_insert steigt aus (Mag verschwindet am Schacht).
+    struct RestPose {
+        std::optional<glm::vec3> lp{};
+        std::optional<glm::quat> lr{};
+        std::optional<glm::vec3> chamber_off{};
+    };
+    std::unordered_map<int32_t, RestPose> m_rest_store{};
+
     bool m_weapon_reacquired{false};
     void refresh_weapon();
     ::REManagedObject* rack_joint();
