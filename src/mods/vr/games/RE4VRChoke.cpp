@@ -775,6 +775,10 @@ void RE4VRChoke::ensure_types() {
 // Abfrage aus pick_target liefe dort ins Leere. Entschieden wird wie beim
 // Tier allein ueber Reichweite, dazu dasselbe Hoehenfenster wie beim Gegner.
 ::REManagedObject* RE4VRChoke::pick_ashley(const glm::vec3& hp) {
+    // [ASHLEY AUS 21.10.2026 -- Ansage] Keine Interaktion mehr mit Ashley:
+    // nie greifbar. Der Rest bleibt stehen, falls es zurueck soll.
+    return nullptr;
+
     // [ACHIEVEMENTS AUSGEBAUT 20.09.2026] Ashley ist IMMER greifbar -- keine
     // Fledermaus, kein Schluessel in einer JSON.
     auto* cm = character_manager();
@@ -4519,6 +4523,9 @@ void RE4VRChoke::stick_into_victim(::REManagedObject* vctx, ::REManagedObject* v
 // REPLY_RANGE_M, war sie gemeint.
 // ============================================================================
 void RE4VRChoke::ashley_reply(bool fuck) {
+    // [ASHLEY AUS 21.10.2026 -- Ansage] Keine Antwort mehr auf Gesten.
+    return;
+
     // [ACHIEVEMENTS AUSGEBAUT 20.09.2026] Ihre Antworten gibt es immer.
 
     if (re4vr::ashley_reply_count(fuck) <= 0) {

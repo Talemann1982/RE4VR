@@ -657,6 +657,10 @@ void RE4VRJiggle::head_apply() {
 // Hooks
 // ============================================================================
 void RE4VRJiggle::on_application_entry(void* entry, const char* name, size_t hash) {
+    // [ASHLEY AUS 21.10.2026 -- Ansage] Kein Kopf-Schubs, kein Klaps, keine
+    // Antwort danach -- das ganze Modul ist nur fuer Ashley da.
+    return;
+
     cfg_ensure();
 
     if (re4vr::mods_gated() || !cfg.enabled) {
@@ -678,6 +682,8 @@ void RE4VRJiggle::on_application_entry(void* entry, const char* name, size_t has
 }
 
 void RE4VRJiggle::on_pre_application_entry(void* entry, const char* name, size_t hash) {
+    return;   // [ASHLEY AUS 21.10.2026] s. on_application_entry
+
     if (re4vr::mods_gated() || !cfg.enabled) {
         return;
     }
